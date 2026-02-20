@@ -80,10 +80,10 @@ Role and scope assignment per user.
 - `createdAt`, `updatedAt`
 
 ### PriorityCategory
-Service-level priority definition.
+Hospital-scoped priority definition (linked by `hospitalId`).
 - `id` (uuid)
 - `hospitalId` (fk)
-- `code` (NORMAL | VIP | EMERGENCY)
+- `code` (free-form identifier; suggested values: NORMAL | VIP | EMERGENCY)
 - `nameAr`, `nameEn`
 - `weight` (higher means higher priority)
 - `isSystem`
@@ -112,8 +112,7 @@ Queue ticket lifecycle aggregate.
 Immutable lifecycle events for audit + analytics.
 - `id` (uuid)
 - `ticketId` (fk)
-- `eventType`
-  - `CREATED`, `CALLED`, `RECALLED`, `SERVING_STARTED`, `COMPLETED`, `NO_SHOW`, `CANCELLED`, `TRANSFERRED_OUT`, `TRANSFERRED_IN`, `PRIORITY_CHANGED`, `LOCKED`, `UNLOCKED`
+- `eventType` (free-form event key; suggested canonical values include: `CREATED`, `CALLED`, `RECALLED`, `SERVING_STARTED`, `COMPLETED`, `NO_SHOW`, `CANCELLED`, `TRANSFERRED_OUT`, `TRANSFERRED_IN`, `PRIORITY_CHANGED`, `LOCKED`, `UNLOCKED`)
 - `actorType` (`USER`, `SYSTEM`, `PATIENT_WHATSAPP`, `PATIENT_PWA`, `KIOSK`)
 - `actorUserId` (nullable fk)
 - `stationId` (nullable fk)
@@ -126,7 +125,7 @@ Configurable messaging templates.
 - `hospitalId` (fk)
 - `channel` (`WHATSAPP`)
 - `eventType`
-- `language` (`ar`, `en`)
+- `language` (free-form language code; v1 suggested values: `ar`, `en`)
 - `content`
 - `isActive`
 - `createdAt`, `updatedAt`

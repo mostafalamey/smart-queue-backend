@@ -47,7 +47,7 @@ Purpose: Define the initial endpoint surface and authorization expectations so f
 
 ### `POST /tickets`
 - Create ticket from kiosk/patient/whatsapp flows.
-- Input includes: `serviceId`, `phoneNumber`, optional `priorityCode` (default NORMAL).
+- Input includes: `serviceId`, `phoneNumber`, optional `priorityCode` (free-form; defaults to the configured normal priority code, e.g., `NORMAL`).
 - Must enforce one-active-ticket-per-phone-per-service.
 - Access: channel client credentials or internal trusted context.
 
