@@ -5,6 +5,7 @@ import {
   QueueEngineError,
   QueueEngineService,
   QueueTicket,
+  TransferResult,
 } from "../../queue-engine";
 import {
   CallNextRequest,
@@ -98,7 +99,22 @@ export class TellerApiHandlers {
     );
   }
 
-  async transfer(request: TransferTicketRequest) {
+  async transfer(
+    request: TransferTicketRequest
+  ): Promise<HttpResponse<TransferResult>> {
+    const destination = request.destination as Record<string, unknown>;
+
+    if (
+      Object.prototype.hasOwnProperty.call(destination, "sequenceNumber") ||
+      Object.prototype.hasOwnProperty.call(destination, "ticketNumber")
+    ) {
+      return failure(
+        400,
+        "INVALID_REQUEST",
+        "sequenceNumber and ticketNumber are server-generated and must not be supplied"
+      ) as unknown as HttpResponse<TransferResult>;
+    }
+
     return execute(() =>
       this.queueEngine.transfer({
         ticketId: request.ticketId,

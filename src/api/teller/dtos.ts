@@ -16,8 +16,6 @@ export interface TransferTicketRequest extends TicketActionRequest {
     departmentId: string;
     serviceId: string;
     ticketDate: Date;
-    sequenceNumber: number;
-    ticketNumber: string;
   };
 }
 

@@ -340,6 +340,10 @@ export class PrismaQueueEngineRepository implements QueueEngineRepository {
     destination: TransferDestinationInput;
   }): Promise<QueueTicket> {
     const client = this.getClient();
+    const generated = await this.generateTransferSequenceAndTicketNumber({
+      serviceId: args.destination.serviceId,
+      ticketDate: args.destination.ticketDate,
+    });
 
     const created = await client.ticket.create({
       data: {
@@ -347,8 +351,8 @@ export class PrismaQueueEngineRepository implements QueueEngineRepository {
         departmentId: args.destination.departmentId,
         serviceId: args.destination.serviceId,
         ticketDate: args.destination.ticketDate,
-        sequenceNumber: args.destination.sequenceNumber,
-        ticketNumber: args.destination.ticketNumber,
+        sequenceNumber: generated.sequenceNumber,
+        ticketNumber: generated.ticketNumber,
         phoneNumber: args.sourceTicket.phoneNumber,
         priorityCategoryId: args.sourceTicket.priorityCategoryId,
         status: "WAITING",
@@ -428,5 +432,43 @@ export class PrismaQueueEngineRepository implements QueueEngineRepository {
 
   private getClient(): PrismaClient | TransactionClient {
     return this.transactionClient ?? this.prisma;
+  }
+
+  private async generateTransferSequenceAndTicketNumber(args: {
+    serviceId: string;
+    ticketDate: Date;
+  }): Promise<{ sequenceNumber: number; ticketNumber: string }> {
+    const client = this.getClient();
+
+    const service = await client.service.findUnique({
+      where: {
+        id: args.serviceId,
+      },
+      select: {
+        ticketPrefix: true,
+      },
+    });
+
+    if (!service) {
+      throw new Error("Destination service not found");
+    }
+
+    const aggregate = await client.ticket.aggregate({
+      where: {
+        serviceId: args.serviceId,
+        ticketDate: args.ticketDate,
+      },
+      _max: {
+        sequenceNumber: true,
+      },
+    });
+
+    const sequenceNumber = (aggregate._max.sequenceNumber ?? 0) + 1;
+    const ticketNumber = `${service.ticketPrefix}-${String(sequenceNumber).padStart(3, "0")}`;
+
+    return {
+      sequenceNumber,
+      ticketNumber,
+    };
   }
 }

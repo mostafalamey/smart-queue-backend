@@ -20,8 +20,6 @@ export interface TransferDestinationInput {
   departmentId: string;
   serviceId: string;
   ticketDate: Date;
-  sequenceNumber: number;
-  ticketNumber: string;
 }
 
 export interface CreateTicketInput {
