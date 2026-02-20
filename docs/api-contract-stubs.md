@@ -48,7 +48,10 @@ Purpose: Define the initial endpoint surface and authorization expectations so f
 ### `POST /tickets`
 - Create ticket from kiosk/patient/whatsapp flows.
 - Input includes: `serviceId`, `phoneNumber`, optional `priorityCode` (free-form; defaults to the configured normal priority code, e.g., `NORMAL`).
-- Must enforce one-active-ticket-per-phone-per-service.
+- Must enforce one-active-ticket-per-phone-per-service:
+  - The backend MUST perform an atomic "check-and-create" so that, under concurrent requests, at most one active ticket exists for a given `(serviceId, phoneNumber)` pair.
+  - "Active" excludes terminal states such as `COMPLETED`, `CANCELLED`, or any other final status defined in the ticket lifecycle.
+  - If an active ticket already exists for the given `(serviceId, phoneNumber)`, the server MUST NOT create a new ticket and MUST respond with `409 Conflict` and a machine-readable error body (e.g. `{ code: "ACTIVE_TICKET_EXISTS", ticketId: "<existingTicketId>" }`).
 - Access: channel client credentials or internal trusted context.
 
 ### `GET /tickets/:ticketId`
