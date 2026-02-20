@@ -81,8 +81,7 @@ model Department {
 
   hospital        Hospital         @relation(fields: [hospitalId], references: [id], onDelete: Cascade)
   services        Service[]
-  managerUsers    RoleAssignment[]
-  staffUsers      RoleAssignment[]
+  roleAssignments RoleAssignment[]
   stationDevices  Device[]
   ticketRelations Ticket[]
 
