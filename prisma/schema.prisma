@@ -1,0 +1,325 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum AppRole {
+  ADMIN
+  IT
+  MANAGER
+  STAFF
+}
+
+enum TicketStatus {
+  WAITING
+  CALLED
+  SERVING
+  COMPLETED
+  NO_SHOW
+  CANCELLED
+  TRANSFERRED_OUT
+}
+
+enum ActorType {
+  USER
+  SYSTEM
+  PATIENT_WHATSAPP
+  PATIENT_PWA
+  KIOSK
+}
+
+enum TemplateChannel {
+  WHATSAPP
+}
+
+enum DeviceType {
+  KIOSK
+  TELLER_PC
+  SIGNAGE_PLAYER
+  LED_ADAPTER
+}
+
+enum IntegrationProvider {
+  ULTRAMESSAGE
+}
+
+model Hospital {
+  id        String   @id @default(uuid())
+  nameAr    String
+  nameEn    String
+  address   String?
+  email     String?
+  website   String?
+  logoPath  String?
+  timezone  String   @default("Asia/Riyadh")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  departments        Department[]
+  stations           CounterStation[]
+  users              User[]
+  priorityCategories PriorityCategory[]
+  tickets            Ticket[]
+  templates          MessageTemplate[]
+  devices            Device[]
+  integrations       IntegrationConfig[]
+  auditLogs          AuditLog[]
+}
+
+model Department {
+  id         String   @id @default(uuid())
+  hospitalId String
+  nameAr     String
+  nameEn     String
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  hospital        Hospital         @relation(fields: [hospitalId], references: [id], onDelete: Cascade)
+  services        Service[]
+  managerUsers    RoleAssignment[]
+  staffUsers      RoleAssignment[]
+  stationDevices  Device[]
+  ticketRelations Ticket[]
+
+  @@index([hospitalId])
+  @@unique([hospitalId, nameEn])
+}
+
+model Service {
+  id                   String   @id @default(uuid())
+  departmentId         String
+  nameAr               String
+  nameEn               String
+  ticketPrefix         String
+  estimatedWaitMinutes Int?
+  nearingTurnThreshold Int      @default(3)
+  dailyResetEnabled    Boolean  @default(true)
+  isActive             Boolean  @default(true)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  department Department      @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  stations   CounterStation[]
+  tickets    Ticket[]
+
+  @@index([departmentId])
+  @@unique([departmentId, ticketPrefix])
+  @@unique([departmentId, nameEn])
+}
+
+model CounterStation {
+  id          String   @id @default(uuid())
+  hospitalId  String
+  serviceId   String
+  counterCode String
+  deviceId    String?  @unique
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  hospital Hospital @relation(fields: [hospitalId], references: [id], onDelete: Cascade)
+  service  Service  @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+
+  calledTickets Ticket[]      @relation("CalledStation")
+  ticketEvents  TicketEvent[]
+  devices       Device[]
+
+  @@index([hospitalId])
+  @@index([serviceId])
+  @@unique([hospitalId, counterCode])
+}
+
+model User {
+  id                  String   @id @default(uuid())
+  hospitalId          String
+  email               String
+  passwordHash        String
+  isActive            Boolean  @default(true)
+  mustChangePassword  Boolean  @default(false)
+  failedLoginAttempts Int      @default(0)
+  lockedUntil         DateTime?
+  avatarPath          String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  hospital        Hospital         @relation(fields: [hospitalId], references: [id], onDelete: Cascade)
+  roleAssignments RoleAssignment[]
+  ticketLocks     Ticket[]         @relation("TicketLockOwner")
+  ticketEvents    TicketEvent[]
+  auditLogs       AuditLog[]
+
+  @@index([hospitalId])
+  @@unique([hospitalId, email])
+}
+
+model RoleAssignment {
+  id           String   @id @default(uuid())
+  userId       String
+  role         AppRole
+  departmentId String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  department Department? @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+
+  @@index([userId])
+  @@index([departmentId])
+  @@unique([userId, role])
+}
+
+model PriorityCategory {
+  id         String   @id @default(uuid())
+  hospitalId String
+  code       String
+  nameAr     String
+  nameEn     String
+  weight     Int
+  isSystem   Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  hospital Hospital @relation(fields: [hospitalId], references: [id], onDelete: Cascade)
+  tickets  Ticket[]
+
+  @@index([hospitalId])
+  @@unique([hospitalId, code])
+  @@unique([hospitalId, weight])
+}
+
+model Ticket {
+  id                    String      @id @default(uuid())
+  hospitalId            String
+  departmentId          String
+  serviceId             String
+  ticketDate            DateTime
+  sequenceNumber        Int
+  ticketNumber          String
+  phoneNumber           String
+  priorityCategoryId    String
+  status                TicketStatus @default(WAITING)
+  calledAt              DateTime?
+  servingStartedAt      DateTime?
+  completedAt           DateTime?
+  cancelledAt           DateTime?
+  calledCounterStationId String?
+  lockedByUserId        String?
+  lockedUntil           DateTime?
+  originTicketId        String?
+  createdAt             DateTime    @default(now())
+  updatedAt             DateTime    @updatedAt
+
+  hospital         Hospital         @relation(fields: [hospitalId], references: [id], onDelete: Cascade)
+  department       Department       @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  service          Service          @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  priorityCategory PriorityCategory @relation(fields: [priorityCategoryId], references: [id], onDelete: Restrict)
+  calledStation    CounterStation?  @relation("CalledStation", fields: [calledCounterStationId], references: [id], onDelete: SetNull)
+  lockOwner        User?            @relation("TicketLockOwner", fields: [lockedByUserId], references: [id], onDelete: SetNull)
+  originTicket     Ticket?          @relation("TicketTransferChain", fields: [originTicketId], references: [id], onDelete: SetNull)
+  transferredTo    Ticket[]         @relation("TicketTransferChain")
+  events           TicketEvent[]
+
+  @@index([hospitalId])
+  @@index([departmentId])
+  @@index([serviceId])
+  @@index([phoneNumber])
+  @@index([status])
+  @@index([priorityCategoryId, createdAt])
+  @@unique([serviceId, ticketDate, sequenceNumber])
+  @@unique([serviceId, ticketDate, ticketNumber])
+}
+
+model TicketEvent {
+  id          String   @id @default(uuid())
+  ticketId    String
+  eventType   String
+  actorType   ActorType
+  actorUserId String?
+  stationId   String?
+  payload     Json?
+  occurredAt  DateTime @default(now())
+
+  ticket    Ticket         @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  actorUser User?          @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+  station   CounterStation? @relation(fields: [stationId], references: [id], onDelete: SetNull)
+
+  @@index([ticketId, occurredAt])
+  @@index([eventType, occurredAt])
+}
+
+model MessageTemplate {
+  id         String          @id @default(uuid())
+  hospitalId String
+  channel    TemplateChannel
+  eventType  String
+  language   String
+  content    String
+  isActive   Boolean         @default(true)
+  createdAt  DateTime        @default(now())
+  updatedAt  DateTime        @updatedAt
+
+  hospital Hospital @relation(fields: [hospitalId], references: [id], onDelete: Cascade)
+
+  @@index([hospitalId])
+  @@unique([hospitalId, channel, eventType, language])
+}
+
+model Device {
+  id                       String    @id @default(uuid())
+  hospitalId               String
+  deviceId                 String    @unique
+  deviceType               DeviceType
+  displayName              String?
+  assignedDepartmentId     String?
+  assignedCounterStationId String?
+  config                   Json?
+  isActive                 Boolean   @default(true)
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
+
+  hospital      Hospital       @relation(fields: [hospitalId], references: [id], onDelete: Cascade)
+  department    Department?    @relation(fields: [assignedDepartmentId], references: [id], onDelete: SetNull)
+  counterStation CounterStation? @relation(fields: [assignedCounterStationId], references: [id], onDelete: SetNull)
+
+  @@index([hospitalId])
+  @@index([assignedDepartmentId])
+  @@index([assignedCounterStationId])
+}
+
+model IntegrationConfig {
+  id         String              @id @default(uuid())
+  hospitalId String
+  provider   IntegrationProvider
+  config     Json?
+  isActive   Boolean             @default(true)
+  createdAt  DateTime            @default(now())
+  updatedAt  DateTime            @updatedAt
+
+  hospital Hospital @relation(fields: [hospitalId], references: [id], onDelete: Cascade)
+
+  @@index([hospitalId])
+  @@unique([hospitalId, provider])
+}
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  hospitalId  String
+  actorUserId String?
+  action      String
+  entityType  String
+  entityId    String
+  before      Json?
+  after       Json?
+  occurredAt  DateTime @default(now())
+
+  hospital  Hospital @relation(fields: [hospitalId], references: [id], onDelete: Cascade)
+  actorUser User?    @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([hospitalId, occurredAt])
+  @@index([entityType, entityId])
+}
