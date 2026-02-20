@@ -7,3 +7,7 @@ Track architecture and API contract notes here.
 - `rbac-matrix.md`
 - `api-contract-stubs.md`
 - `../prisma/schema.prisma`
+
+## Phase 2 Artifacts (Start)
+- `phase-2-queue-engine.md`
+- `../src/queue-engine/`

@@ -101,7 +101,7 @@ Queue ticket lifecycle aggregate.
 - `phoneNumber`
 - `priorityCategoryId` (fk)
 - `status` (`WAITING`, `CALLED`, `SERVING`, `COMPLETED`, `NO_SHOW`, `CANCELLED`, `TRANSFERRED_OUT`)
-- `calledAt`, `servingStartedAt`, `completedAt`, `cancelledAt` (nullable)
+- `calledAt`, `servingStartedAt`, `completedAt`, `noShowAt`, `cancelledAt` (nullable)
 - `calledCounterStationId` (nullable fk)
 - `lockedByUserId` (nullable fk)
 - `lockedUntil` (nullable)
