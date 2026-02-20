@@ -48,7 +48,7 @@ const toQueueTicket = (row: {
     calledAt: row.calledAt,
     servingStartedAt: row.servingStartedAt,
     completedAt: row.completedAt,
-    noShowAt: null,
+    noShowAt: row.noShowAt,
     cancelledAt: row.cancelledAt,
     calledCounterStationId: row.calledCounterStationId,
     originTicketId: row.originTicketId,
@@ -166,28 +166,32 @@ export class PrismaQueueEngineRepository implements QueueEngineRepository {
     });
 
     return rows.map((row) =>
-      toQueueTicket({
-        id: row.id,
-        hospitalId: row.hospitalId,
-        departmentId: row.departmentId,
-        serviceId: row.serviceId,
-        ticketDate: row.ticketDate,
-        sequenceNumber: row.sequenceNumber,
-        ticketNumber: row.ticketNumber,
-        phoneNumber: row.phoneNumber,
-        priorityCategoryId: row.priorityCategoryId,
-        status: row.status,
-        calledAt: row.calledAt,
-        servingStartedAt: row.servingStartedAt,
-        completedAt: row.completedAt,
-        noShowAt: null,
-        cancelledAt: row.cancelledAt,
-        calledCounterStationId: row.calledCounterStationId,
-        originTicketId: row.originTicketId,
-        createdAt: row.createdAt,
-        updatedAt: row.updatedAt,
-        priorityWeight: row.priorityCategory.weight,
-      })
+      {
+        const rowWithNoShowAt = row as typeof row & { noShowAt: Date | null };
+
+        return toQueueTicket({
+          id: row.id,
+          hospitalId: row.hospitalId,
+          departmentId: row.departmentId,
+          serviceId: row.serviceId,
+          ticketDate: row.ticketDate,
+          sequenceNumber: row.sequenceNumber,
+          ticketNumber: row.ticketNumber,
+          phoneNumber: row.phoneNumber,
+          priorityCategoryId: row.priorityCategoryId,
+          status: row.status,
+          calledAt: row.calledAt,
+          servingStartedAt: row.servingStartedAt,
+          completedAt: row.completedAt,
+          noShowAt: rowWithNoShowAt.noShowAt,
+          cancelledAt: row.cancelledAt,
+          calledCounterStationId: row.calledCounterStationId,
+          originTicketId: row.originTicketId,
+          createdAt: row.createdAt,
+          updatedAt: row.updatedAt,
+          priorityWeight: row.priorityCategory.weight,
+        });
+      }
     );
   }
 
@@ -249,6 +253,10 @@ export class PrismaQueueEngineRepository implements QueueEngineRepository {
       },
     });
 
+    const createdWithNoShowAt = created as typeof created & {
+      noShowAt: Date | null;
+    };
+
     return toQueueTicket({
       id: created.id,
       hospitalId: created.hospitalId,
@@ -263,7 +271,7 @@ export class PrismaQueueEngineRepository implements QueueEngineRepository {
       calledAt: created.calledAt,
       servingStartedAt: created.servingStartedAt,
       completedAt: created.completedAt,
-      noShowAt: null,
+      noShowAt: createdWithNoShowAt.noShowAt,
       cancelledAt: created.cancelledAt,
       calledCounterStationId: created.calledCounterStationId,
       originTicketId: created.originTicketId,
@@ -299,6 +307,10 @@ export class PrismaQueueEngineRepository implements QueueEngineRepository {
       },
     });
 
+    const updatedWithNoShowAt = updated as typeof updated & {
+      noShowAt: Date | null;
+    };
+
     return toQueueTicket({
       id: updated.id,
       hospitalId: updated.hospitalId,
@@ -313,7 +325,7 @@ export class PrismaQueueEngineRepository implements QueueEngineRepository {
       calledAt: updated.calledAt,
       servingStartedAt: updated.servingStartedAt,
       completedAt: updated.completedAt,
-      noShowAt: null,
+      noShowAt: updatedWithNoShowAt.noShowAt,
       cancelledAt: updated.cancelledAt,
       calledCounterStationId: updated.calledCounterStationId,
       originTicketId: updated.originTicketId,
@@ -351,6 +363,10 @@ export class PrismaQueueEngineRepository implements QueueEngineRepository {
       },
     });
 
+    const createdWithNoShowAt = created as typeof created & {
+      noShowAt: Date | null;
+    };
+
     return toQueueTicket({
       id: created.id,
       hospitalId: created.hospitalId,
@@ -365,7 +381,7 @@ export class PrismaQueueEngineRepository implements QueueEngineRepository {
       calledAt: created.calledAt,
       servingStartedAt: created.servingStartedAt,
       completedAt: created.completedAt,
-      noShowAt: null,
+      noShowAt: createdWithNoShowAt.noShowAt,
       cancelledAt: created.cancelledAt,
       calledCounterStationId: created.calledCounterStationId,
       originTicketId: created.originTicketId,
