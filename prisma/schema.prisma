@@ -83,7 +83,7 @@ model Department {
   services        Service[]
   roleAssignments RoleAssignment[]
   stationDevices  Device[]
-  ticketRelations Ticket[]
+  tickets         Ticket[]
 
   @@index([hospitalId])
   @@unique([hospitalId, nameEn])
