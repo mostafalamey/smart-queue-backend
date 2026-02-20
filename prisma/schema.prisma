@@ -233,12 +233,24 @@ model Ticket {
   transferredTo    Ticket[]         @relation("TicketTransferChain")
   events           TicketEvent[]
 
+  // General indexes
   @@index([hospitalId])
   @@index([departmentId])
   @@index([serviceId])
   @@index([phoneNumber])
   @@index([status])
   @@index([priorityCategoryId, createdAt])
+
+  // Business rule: At most one *active* ticket per (phoneNumber, serviceId).
+  // Active tickets are those with status in {WAITING, CALLED, SERVING}.
+  // This cannot be expressed as a simple unique constraint in Prisma because it
+  // depends on the status field (i.e. it would require a partial unique index).
+  // The application layer is responsible for enforcing this invariant by checking
+  // for existing active tickets before creating a new one, typically using this
+  // composite index for efficient lookups:
+  @@index([phoneNumber, serviceId, status])
+
+  // Ticket numbering uniqueness per service and date
   @@unique([serviceId, ticketDate, sequenceNumber])
   @@unique([serviceId, ticketDate, ticketNumber])
 }
