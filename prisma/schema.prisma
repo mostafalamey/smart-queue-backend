@@ -169,7 +169,7 @@ model RoleAssignment {
 
   @@index([userId])
   @@index([departmentId])
-  @@unique([userId, role])
+  @@unique([userId, role, departmentId])
 }
 
 model PriorityCategory {
