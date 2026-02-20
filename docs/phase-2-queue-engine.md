@@ -23,7 +23,7 @@ Branch: `feature/queue-engine-core`
 - `transfer` marks source `TRANSFERRED_OUT` and creates a destination `WAITING` ticket with linked transfer events.
 
 ## Next implementation slice
-- Wire service methods to API endpoints (`/teller/*`, `/queue/*`).
+- Wire queue service methods to concrete HTTP routes in framework layer (`Nest/Express`) for `/teller/*`.
 - Add focused tests for selector and transition matrix.
 - Add integration tests for transaction safety (`callNext`, duplicate prevention).
 - Add migration + repository support for any new queue fields introduced during phase 2.
@@ -33,6 +33,7 @@ Branch: `feature/queue-engine-core`
 - Transaction context propagation implemented via repository-level transaction client context.
 - `getTicketForUpdate` now uses SQL row-level lock (`FOR UPDATE`) inside transactions.
 - Queue engine service factory added: `src/queue-engine/factory.ts`
+- Framework-agnostic teller API handlers added: `src/api/teller/handlers.ts`
 
 ## Temporary Compatibility Note
 - The queue engine domain includes `noShowAt`, and schema includes `Ticket.noShowAt`.
