@@ -455,12 +455,63 @@ export class QueueEngineService {
       meta?: { target?: string[] };
     };
 
-    if (candidate.code === "P2002" || candidate.code === "23505") {
-      return true;
+    const message =
+      typeof candidate.message === "string"
+        ? candidate.message.toLowerCase()
+        : "";
+    const hasUniqueSignal =
+      candidate.code === "P2002" ||
+      candidate.code === "23505" ||
+      message.includes("unique");
+
+    if (!hasUniqueSignal) {
+      return false;
     }
 
-    if (typeof candidate.message === "string") {
-      return candidate.message.toLowerCase().includes("unique");
+    const target = candidate.meta?.target;
+    const normalizeTarget = (columns: string[]): string => {
+      return [...columns].map((column) => column.toLowerCase()).sort().join("|");
+    };
+
+    const sequenceConstraintTarget = normalizeTarget([
+      "serviceId",
+      "ticketDate",
+      "sequenceNumber",
+    ]);
+    const ticketNumberConstraintTarget = normalizeTarget([
+      "serviceId",
+      "ticketDate",
+      "ticketNumber",
+    ]);
+    const activeTicketConstraintTarget = normalizeTarget([
+      "serviceId",
+      "phoneNumber",
+      "status",
+    ]);
+
+    if (Array.isArray(target) && target.length > 0) {
+      const normalizedTarget = normalizeTarget(target);
+
+      if (
+        normalizedTarget === sequenceConstraintTarget ||
+        normalizedTarget === ticketNumberConstraintTarget
+      ) {
+        return false;
+      }
+
+      if (normalizedTarget === activeTicketConstraintTarget) {
+        return true;
+      }
+
+      return false;
+    }
+
+    if (
+      message.includes("active ticket") ||
+      message.includes("phone number per service") ||
+      message.includes("phonenumber")
+    ) {
+      return true;
     }
 
     return false;
