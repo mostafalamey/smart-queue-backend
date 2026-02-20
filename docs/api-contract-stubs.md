@@ -1,0 +1,159 @@
+# Smart Queue Backend — API Contract Stubs (Phase 1)
+
+Date: 2026-02-20
+Phase: 1 (Domain Model + RBAC Foundation)
+
+Purpose: Define the initial endpoint surface and authorization expectations so frontend channels can begin integration in parallel.
+
+## Auth
+
+### `POST /auth/login`
+- Input: `{ email, password, deviceId? }`
+- Output: access token + refresh token (transport strategy to be finalized per client type)
+- Access: public
+
+### `POST /auth/refresh`
+- Input: refresh token/cookie
+- Output: rotated tokens
+- Access: authenticated refresh context
+
+### `POST /auth/logout`
+- Invalidates refresh token session.
+- Access: authenticated
+
+### `POST /auth/change-password`
+- Input: `{ currentPassword, newPassword }`
+- Access: authenticated
+
+## Departments and Services
+
+### `GET /departments`
+- Returns departments in scope.
+- Access: `ADMIN`, `MANAGER`, scoped staff reads
+
+### `POST /departments`
+- Create department.
+- Access: `ADMIN`
+
+### `GET /departments/:id/services`
+- List services for department.
+- Access: scoped reads
+
+### `POST /departments/:id/services`
+- Create service with `ticketPrefix`, bilingual names, wait config.
+- Access: `ADMIN`
+
+## Tickets / Queue
+
+### `POST /tickets`
+- Create ticket from kiosk/patient/whatsapp flows.
+- Input includes: `serviceId`, `phoneNumber`, optional `priorityCode` (free-form; defaults to the configured normal priority code, e.g., `NORMAL`).
+- Must enforce one-active-ticket-per-phone-per-service:
+  - The backend MUST perform an atomic "check-and-create" so that, under concurrent requests, at most one active ticket exists for a given `(serviceId, phoneNumber)` pair.
+  - "Active" excludes terminal states such as `COMPLETED`, `CANCELLED`, or any other final status defined in the ticket lifecycle.
+  - If an active ticket already exists for the given `(serviceId, phoneNumber)`, the server MUST NOT create a new ticket and MUST respond with `409 Conflict` and a machine-readable error body (e.g. `{ code: "ACTIVE_TICKET_EXISTS", ticketId: "<existingTicketId>" }`).
+- Access: channel client credentials or internal trusted context.
+
+### `GET /tickets/:ticketId`
+- Ticket details + latest status.
+- Access: scoped role access.
+
+### `GET /queue/services/:serviceId/summary`
+- Waiting/called/serving counts and now serving info.
+- Access: scoped role access.
+
+### `POST /queue/tickets/:ticketId/lock`
+- Lock ticket for priority edit.
+- Access: `ADMIN`, `MANAGER` (scoped)
+
+### `POST /queue/tickets/:ticketId/priority`
+- Change priority while not called.
+- Access: `ADMIN`, `MANAGER` (scoped)
+
+## Teller Operations
+
+### `POST /teller/call-next`
+- Input: `{ stationId }`
+- Performs atomic next-ticket selection by priority+FIFO.
+- Concurrency & locking: MUST be implemented as a single database transaction using row-level locking (pessimistic locking) so that, under concurrent calls from multiple staff, a given ticket can only be selected and assigned to one teller station.
+- Access: `STAFF`
+
+### `POST /teller/:ticketId/recall`
+- Re-announce currently called/serving ticket.
+- Access: `STAFF`
+
+### `POST /teller/:ticketId/start-serving`
+- Explicitly move ticket from `CALLED` to `SERVING`.
+- Sets `servingStartedAt` and emits `SERVING_STARTED`.
+- Access: `STAFF`
+
+### `POST /teller/:ticketId/skip`
+- Marks final no-show outcome by setting `TicketStatus` to `NO_SHOW`.
+- Access: `STAFF`
+
+### `POST /teller/:ticketId/cancel`
+- Marks ticket as cancelled by setting `TicketStatus` to `CANCELLED`.
+- Access: `STAFF`
+### `POST /teller/:ticketId/complete`
+- Marks completed.
+- Access: `STAFF`
+
+### `POST /teller/:ticketId/transfer`
+- Input: `{ destinationServiceId }`
+- Creates linked destination ticket.
+- Access: `STAFF`
+
+## Devices and Mapping
+
+### `GET /devices`
+- Access: `ADMIN`, `IT`
+
+### `POST /devices`
+- Register/enroll device by `deviceId`.
+- Access: `ADMIN`, `IT`
+
+### `POST /mapping/stations/:stationId/bind-device`
+- Bind teller PC device to station.
+- Access: `ADMIN`, `IT`
+
+## Messaging / Integration
+
+### `GET /message-templates`
+### `POST /message-templates`
+- Access: `ADMIN`, `IT`
+
+### `POST /integrations/ultramessage/webhook`
+- Inbound provider webhook endpoint (gateway-facing).
+- Access: service-auth only
+
+## Analytics
+
+### `GET /analytics/overview`
+- Filters: date range, department.
+- Access: `ADMIN`, `MANAGER` scoped.
+
+## System / Audit
+
+### `GET /audit-logs`
+- Access: `ADMIN`
+
+### `POST /services/:serviceId/reset-counter`
+- Manual ticket sequence reset endpoint.
+- Access: `ADMIN`, `MANAGER` scoped
+
+## Realtime Events (Socket Namespace Stub)
+Namespace: `/queue`
+- `queue.updated` -> service queue summary changes
+- `ticket.called` -> called ticket + station
+- `ticket.recalled`
+- `ticket.completed`
+- `ticket.transferred`
+
+## Error Contract (Stub)
+```json
+{
+  "code": "DOMAIN_RULE_VIOLATION",
+  "message": "Only one active ticket is allowed per phone number per service.",
+  "details": {}
+}
+```

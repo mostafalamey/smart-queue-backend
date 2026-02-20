@@ -6,6 +6,7 @@ Core API and queue engine service for Smart Queue (NestJS + PostgreSQL + Redis/B
 - Domain model + RBAC foundation
 - Queue engine transactional rules
 - Auth + API + realtime gateway
+- Prisma schema/migrations foundation
 
 ## Branch Workflow
 - main: reviewed merges only
