@@ -116,7 +116,6 @@ model CounterStation {
   hospitalId  String
   serviceId   String
   counterCode String
-  deviceId    String?  @unique
   isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
