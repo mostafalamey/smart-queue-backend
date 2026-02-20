@@ -75,6 +75,7 @@ Purpose: Define the initial endpoint surface and authorization expectations so f
 ### `POST /teller/call-next`
 - Input: `{ stationId }`
 - Performs atomic next-ticket selection by priority+FIFO.
+- Concurrency & locking: MUST be implemented as a single database transaction using row-level locking (pessimistic locking) so that, under concurrent calls from multiple staff, a given ticket can only be selected and assigned to one teller station.
 - Access: `STAFF`
 
 ### `POST /teller/:ticketId/recall`
