@@ -24,6 +24,19 @@ export interface TransferDestinationInput {
   ticketNumber: string;
 }
 
+export interface CreateTicketInput {
+  hospitalId: string;
+  departmentId: string;
+  serviceId: string;
+  ticketDate: Date;
+  sequenceNumber: number;
+  ticketNumber: string;
+  phoneNumber: string;
+  priorityCategoryId: string;
+  priorityWeight: number;
+  actor: QueueActor;
+}
+
 export interface QueueEngineRepository {
   runInTransaction<T>(work: () => Promise<T>): Promise<T>;
   getTicketForUpdate(ticketId: string): Promise<QueueTicket | null>;
@@ -33,6 +46,18 @@ export interface QueueEngineRepository {
     phoneNumber: string;
     excludeTicketId?: string;
   }): Promise<boolean>;
+  createTicket(args: {
+    hospitalId: string;
+    departmentId: string;
+    serviceId: string;
+    ticketDate: Date;
+    sequenceNumber: number;
+    ticketNumber: string;
+    phoneNumber: string;
+    priorityCategoryId: string;
+    priorityWeight: number;
+    now: Date;
+  }): Promise<QueueTicket>;
   updateTicket(ticket: QueueTicket): Promise<QueueTicket>;
   createTransferInTicket(args: {
     sourceTicket: QueueTicket;
@@ -50,6 +75,52 @@ export interface QueueEngineRepository {
 export class QueueEngineService {
   constructor(private readonly repository: QueueEngineRepository) {}
 
+  async createTicket(input: CreateTicketInput): Promise<QueueTicket> {
+    const timestamp = new Date();
+
+    return this.repository.runInTransaction(async () => {
+      await this.assertNoDuplicateActiveTicketInTransaction({
+        serviceId: input.serviceId,
+        phoneNumber: input.phoneNumber,
+      });
+
+      let created: QueueTicket;
+      try {
+        created = await this.repository.createTicket({
+          hospitalId: input.hospitalId,
+          departmentId: input.departmentId,
+          serviceId: input.serviceId,
+          ticketDate: input.ticketDate,
+          sequenceNumber: input.sequenceNumber,
+          ticketNumber: input.ticketNumber,
+          phoneNumber: input.phoneNumber,
+          priorityCategoryId: input.priorityCategoryId,
+          priorityWeight: input.priorityWeight,
+          now: timestamp,
+        });
+      } catch (error: unknown) {
+        if (this.isDuplicateConstraintError(error)) {
+          throw new QueueEngineError(
+            "Only one active ticket per phone number per service is allowed",
+            "DUPLICATE_ACTIVE_TICKET"
+          );
+        }
+        throw error;
+      }
+
+      await this.repository.insertEvent({
+        ticketId: created.id,
+        eventType: "CREATED",
+        actorType: input.actor.actorType,
+        actorUserId: input.actor.actorUserId,
+        stationId: input.actor.stationId,
+        occurredAt: timestamp,
+      });
+
+      return created;
+    });
+  }
+
   async callNext(args: {
     serviceId: string;
     stationId: string;
@@ -64,14 +135,47 @@ export class QueueEngineService {
       );
       const selection = selectNextWaitingTicket(waitingTickets);
 
-      if (!selection.selected) {
+      if (selection.candidates.length === 0) {
         throw new QueueEngineError(
           "No waiting tickets available for this service",
           "NO_WAITING_TICKETS"
         );
       }
 
-      const called = markCalled(selection.selected, args.stationId, timestamp);
+      let selectedLockedTicket: QueueTicket | null = null;
+
+      for (const candidate of selection.candidates) {
+        const lockedCandidate = await this.repository.getTicketForUpdate(
+          candidate.id
+        );
+
+        if (!lockedCandidate) {
+          continue;
+        }
+
+        if (
+          lockedCandidate.serviceId !== args.serviceId ||
+          lockedCandidate.status !== "WAITING"
+        ) {
+          continue;
+        }
+
+        selectedLockedTicket = lockedCandidate;
+        break;
+      }
+
+      if (!selectedLockedTicket) {
+        throw new QueueEngineError(
+          "No waiting tickets available for this service",
+          "NO_WAITING_TICKETS"
+        );
+      }
+
+      const called = markCalled(
+        selectedLockedTicket,
+        args.stationId,
+        timestamp
+      );
       const updated = await this.repository.updateTicket(called);
 
       await this.repository.insertEvent({
@@ -311,7 +415,7 @@ export class QueueEngineService {
     });
   }
 
-  async assertNoDuplicateActiveTicket(args: {
+  private async assertNoDuplicateActiveTicketInTransaction(args: {
     serviceId: string;
     phoneNumber: string;
     excludeTicketId?: string;
@@ -338,5 +442,27 @@ export class QueueEngineService {
     }
 
     return ticket;
+  }
+
+  private isDuplicateConstraintError(error: unknown): boolean {
+    if (!error || typeof error !== "object") {
+      return false;
+    }
+
+    const candidate = error as {
+      code?: string;
+      message?: string;
+      meta?: { target?: string[] };
+    };
+
+    if (candidate.code === "P2002" || candidate.code === "23505") {
+      return true;
+    }
+
+    if (typeof candidate.message === "string") {
+      return candidate.message.toLowerCase().includes("unique");
+    }
+
+    return false;
   }
 }

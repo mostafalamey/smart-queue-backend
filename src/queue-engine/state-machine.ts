@@ -64,6 +64,7 @@ export const markNoShow = (
   return {
     ...ticket,
     status: "NO_SHOW",
+    noShowAt: timestamp,
     updatedAt: timestamp,
   };
 };

@@ -45,6 +45,7 @@ export interface QueueTicket {
   calledAt: Date | null;
   servingStartedAt: Date | null;
   completedAt: Date | null;
+  noShowAt: Date | null;
   cancelledAt: Date | null;
   calledCounterStationId: string | null;
   originTicketId: string | null;

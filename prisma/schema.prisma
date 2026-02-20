@@ -215,6 +215,7 @@ model Ticket {
   calledAt              DateTime?
   servingStartedAt      DateTime?
   completedAt           DateTime?
+  noShowAt              DateTime?
   cancelledAt           DateTime?
   calledCounterStationId String?
   lockedByUserId        String?
