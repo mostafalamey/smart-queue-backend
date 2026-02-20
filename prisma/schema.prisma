@@ -95,20 +95,25 @@ model Service {
   nameAr               String
   nameEn               String
   ticketPrefix         String
-  estimatedWaitMinutes Int?
-  nearingTurnThreshold Int      @default(3)
-  dailyResetEnabled    Boolean  @default(true)
-  isActive             Boolean  @default(true)
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  /// Optional, statically configured average wait time (in minutes) for this service.
+ /// When null, no preconfigured wait estimate exists; consumers should treat wait
+ /// time estimates as unavailable or derive them dynamically from live queue data.
+ estimatedWaitMinutes Int?
+ /// Number of people ahead of a ticket at which "nearing turn" notifications may be triggered.
+ /// This applies regardless of whether `estimatedWaitMinutes` is configured.
+ nearingTurnThreshold Int      @default(3)
+ dailyResetEnabled    Boolean  @default(true)
+ isActive             Boolean  @default(true)
+ createdAt            DateTime @default(now())
+ updatedAt            DateTime @updatedAt
 
-  department Department      @relation(fields: [departmentId], references: [id], onDelete: Cascade)
-  stations   CounterStation[]
-  tickets    Ticket[]
+ department Department      @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+ stations   CounterStation[]
+ tickets    Ticket[]
 
-  @@index([departmentId])
-  @@unique([departmentId, ticketPrefix])
-  @@unique([departmentId, nameEn])
+ @@index([departmentId])
+ @@unique([departmentId, ticketPrefix])
+ @@unique([departmentId, nameEn])
 }
 
 model CounterStation {
