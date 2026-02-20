@@ -83,9 +83,12 @@ Purpose: Define the initial endpoint surface and authorization expectations so f
 - Access: `STAFF`
 
 ### `POST /teller/:ticketId/skip`
-- Marks final no-show outcome.
+- Marks final no-show outcome by setting `TicketStatus` to `NO_SHOW`.
 - Access: `STAFF`
 
+### `POST /teller/:ticketId/cancel`
+- Marks ticket as cancelled by setting `TicketStatus` to `CANCELLED`.
+- Access: `STAFF`
 ### `POST /teller/:ticketId/complete`
 - Marks completed.
 - Access: `STAFF`
