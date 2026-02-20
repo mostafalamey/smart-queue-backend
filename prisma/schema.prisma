@@ -126,7 +126,7 @@ model CounterStation {
   updatedAt   DateTime @updatedAt
 
   hospital Hospital @relation(fields: [hospitalId], references: [id], onDelete: Cascade)
-  service  Service  @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  service  Service  @relation(fields: [serviceId], references: [id], onDelete: Cascade)
 
   calledTickets Ticket[]      @relation("CalledStation")
   ticketEvents  TicketEvent[]
