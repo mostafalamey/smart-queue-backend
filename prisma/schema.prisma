@@ -130,7 +130,7 @@ model CounterStation {
 
   calledTickets Ticket[]      @relation("CalledStation")
   ticketEvents  TicketEvent[]
-  device        Device?
+  devices       Device[]
 
   @@index([hospitalId])
   @@index([serviceId])

@@ -82,6 +82,11 @@ Purpose: Define the initial endpoint surface and authorization expectations so f
 - Re-announce currently called/serving ticket.
 - Access: `STAFF`
 
+### `POST /teller/:ticketId/start-serving`
+- Explicitly move ticket from `CALLED` to `SERVING`.
+- Sets `servingStartedAt` and emits `SERVING_STARTED`.
+- Access: `STAFF`
+
 ### `POST /teller/:ticketId/skip`
 - Marks final no-show outcome by setting `TicketStatus` to `NO_SHOW`.
 - Access: `STAFF`
