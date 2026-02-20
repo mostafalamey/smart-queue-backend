@@ -108,6 +108,42 @@ Queue ticket lifecycle aggregate.
 - `originTicketId` (nullable self fk for transferred tickets)
 - `createdAt`, `updatedAt`
 
+### Ticket State Machine (v1)
+Expected lifecycle transitions and timestamp behavior:
+
+- `WAITING -> CALLED`
+  - Trigger: teller `Call Next`
+  - Sets: `calledAt`
+  - Emits event: `CALLED`
+
+- `CALLED -> SERVING`
+  - Trigger: explicit teller action when service actually starts (not automatic on call)
+  - Sets: `servingStartedAt`
+  - Emits event: `SERVING_STARTED`
+
+- `CALLED -> NO_SHOW` or `SERVING -> NO_SHOW`
+  - Trigger: teller `Skip`
+  - Emits event: `NO_SHOW`
+
+- `SERVING -> COMPLETED`
+  - Trigger: teller `Complete`
+  - Sets: `completedAt`
+  - Emits event: `COMPLETED`
+
+- `WAITING -> CANCELLED`
+  - Trigger: patient cancel before call (or authorized admin flow)
+  - Sets: `cancelledAt`
+  - Emits event: `CANCELLED`
+
+- `WAITING|CALLED|SERVING -> TRANSFERRED_OUT`
+  - Trigger: teller `Transfer`
+  - Source ticket marked `TRANSFERRED_OUT`; destination ticket created as `WAITING`
+  - Emits events: `TRANSFERRED_OUT` (source), `TRANSFERRED_IN` (destination)
+
+Notes:
+- `calledAt` and `servingStartedAt` are intentionally separate for analytics (`wait time` vs `actual service start`).
+- `Recall` does not change ticket status; it emits `RECALLED` and re-announces the currently called/serving ticket.
+
 ### TicketEvent
 Immutable lifecycle events for audit + analytics.
 - `id` (uuid)
