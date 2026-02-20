@@ -76,7 +76,7 @@ Role and scope assignment per user.
 - `id` (uuid)
 - `userId` (fk)
 - `role` (Admin | IT | Manager | Staff)
-- `departmentId` (nullable, required for Manager and Staff)
+- `departmentId` (nullable at DB level; required by application logic for Manager and Staff, optional for Admin and IT)
 - `createdAt`, `updatedAt`
 
 ### PriorityCategory
