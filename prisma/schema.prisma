@@ -195,6 +195,12 @@ model Ticket {
   hospitalId            String
   departmentId          String
   serviceId             String
+  // ticketDate represents the hospital-local calendar date bucket for this ticket.
+  // It MUST be stored as a canonical UTC timestamp corresponding to that local day
+  // (e.g. the start-of-day in the hospital's timezone as defined in Hospital.timezone).
+  // Application code is responsible for converting between the hospital's local date
+  // and this UTC bucket when creating tickets and when querying by ticketDate, so that
+  // per-day sequencing and uniqueness constraints remain correct across time zones.
   ticketDate            DateTime
   sequenceNumber        Int
   ticketNumber          String
