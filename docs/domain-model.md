@@ -85,7 +85,7 @@ Hospital-scoped priority definition (linked by `hospitalId`).
 - `hospitalId` (fk)
 - `code` (free-form identifier; suggested values: NORMAL | VIP | EMERGENCY)
 - `nameAr`, `nameEn`
-- `weight` (higher means higher priority)
+- `weight` (positive integer >= 1; higher value means higher priority; enforced at the application layer)
 - `isSystem`
 - `createdAt`, `updatedAt`
 

@@ -182,6 +182,8 @@ model PriorityCategory {
   code       String
   nameAr     String
   nameEn     String
+  // weight must be a positive integer (>= 1); higher value means higher priority.
+  // Enforced at the application layer: reject creates/updates where weight < 1.
   weight     Int
   isSystem   Boolean  @default(false)
   createdAt  DateTime @default(now())
