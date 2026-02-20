@@ -1,4 +1,5 @@
 import { Prisma, PrismaClient, TicketStatus } from "@prisma/client";
+import { QueueEngineError } from "./errors";
 import {
   QueueEngineRepository,
   TransferDestinationInput,
@@ -440,30 +441,34 @@ export class PrismaQueueEngineRepository implements QueueEngineRepository {
   }): Promise<{ sequenceNumber: number; ticketNumber: string }> {
     const client = this.getClient();
 
-    const service = await client.service.findUnique({
-      where: {
-        id: args.serviceId,
-      },
-      select: {
-        ticketPrefix: true,
-      },
-    });
+    const serviceRows = await client.$queryRaw<Array<{ ticketPrefix: string }>>`
+      SELECT "ticketPrefix"
+      FROM "Service"
+      WHERE "id" = ${args.serviceId}
+      FOR UPDATE
+    `;
 
-    if (!service) {
-      throw new Error("Destination service not found");
+    if (serviceRows.length === 0) {
+      throw new QueueEngineError(
+        "Destination service not found",
+        "SERVICE_NOT_FOUND"
+      );
     }
 
-    const aggregate = await client.ticket.aggregate({
-      where: {
-        serviceId: args.serviceId,
-        ticketDate: args.ticketDate,
-      },
-      _max: {
-        sequenceNumber: true,
-      },
-    });
+    const service = serviceRows[0];
 
-    const sequenceNumber = (aggregate._max.sequenceNumber ?? 0) + 1;
+    const sequenceRows = await client.$queryRaw<
+      Array<{ maxSequenceNumber: number | bigint | string | null }>
+    >`
+      SELECT COALESCE(MAX("sequenceNumber"), 0) AS "maxSequenceNumber"
+      FROM "Ticket"
+      WHERE "serviceId" = ${args.serviceId}
+        AND "ticketDate" = ${args.ticketDate}
+    `;
+
+    const maxSequenceRaw = sequenceRows[0]?.maxSequenceNumber ?? 0;
+    const maxSequence = Number(maxSequenceRaw);
+    const sequenceNumber = maxSequence + 1;
     const ticketNumber = `${service.ticketPrefix}-${String(sequenceNumber).padStart(3, "0")}`;
 
     return {

@@ -18,6 +18,8 @@ const mapQueueError = (error: QueueEngineError): HttpResponse => {
   switch (error.code) {
     case "TICKET_NOT_FOUND":
       return failure(404, error.code, error.message);
+    case "SERVICE_NOT_FOUND":
+      return failure(404, error.code, error.message);
     case "NO_WAITING_TICKETS":
       return failure(404, error.code, error.message);
     case "DUPLICATE_ACTIVE_TICKET":
