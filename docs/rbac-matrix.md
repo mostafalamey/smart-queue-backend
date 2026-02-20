@@ -33,7 +33,7 @@ Phase: 1 (Domain Model + RBAC Foundation)
 | Ticket lookup | ✅ | ❌ | ✅ (own department) | ✅ (bound service) |
 | Ticket lock/unlock | ✅ | ❌ | ✅ (own department) | ❌ |
 | Change ticket priority (not yet called) | ✅ | ❌ | ✅ (own department) | ❌ |
-| Call next / recall / skip / complete / transfer | ❌ | ❌ | ❌ | ✅ |
+| Call next / recall / skip / complete / transfer | ✅ | ❌ | ❌ | ✅ |
 | Analytics read | ✅ | ❌ | ✅ (own department) | ❌ |
 | Retention policy read/write | ✅ | ✅ | ❌ | ❌ |
 | Message template read/write | ✅ | ✅ | ❌ | ❌ |
