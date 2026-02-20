@@ -82,7 +82,7 @@ model Department {
   hospital        Hospital         @relation(fields: [hospitalId], references: [id], onDelete: Cascade)
   services        Service[]
   roleAssignments RoleAssignment[]
-  stationDevices  Device[]
+  devices         Device[]
   tickets         Ticket[]
 
   @@index([hospitalId])
