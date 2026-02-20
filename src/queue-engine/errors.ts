@@ -3,6 +3,7 @@ export class QueueEngineError extends Error {
     message: string,
     public readonly code:
       | "TICKET_NOT_FOUND"
+      | "SERVICE_NOT_FOUND"
       | "INVALID_TRANSITION"
       | "NO_WAITING_TICKETS"
       | "DUPLICATE_ACTIVE_TICKET"
