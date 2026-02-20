@@ -54,9 +54,10 @@ Physical/virtual teller station bound to one service in v1.
 - `hospitalId` (fk)
 - `counterCode` (display identifier)
 - `serviceId` (fk)
-- `deviceId` (app-generated device id)
 - `isActive`
 - `createdAt`, `updatedAt`
+
+> Note: A teller PC device is bound to a station via `Device.assignedCounterStationId` (one-to-one). The station does not carry its own device FK.
 
 ### User
 Authenticated Smart Queue user.

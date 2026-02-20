@@ -211,8 +211,17 @@ model Ticket {
   ticketNumber          String
   phoneNumber           String
   priorityCategoryId    String
+  /// Ticket lifecycle state. Typical flow:
+  /// WAITING -> CALLED (when the ticket is first announced at a counter),
+  /// CALLED -> SERVING (when the staff member explicitly starts serving),
+  /// SERVING -> COMPLETED or CANCELLED.
   status                TicketStatus @default(WAITING)
+  /// Timestamp when the ticket was first called to a counter.
+  /// Set when status transitions to CALLED.
   calledAt              DateTime?
+  /// Timestamp when serving actually started at the counter.
+  /// Set by an explicit "start serving" action when status transitions from CALLED to SERVING;
+  /// not automatically derived from calledAt.
   servingStartedAt      DateTime?
   completedAt           DateTime?
   cancelledAt           DateTime?
@@ -297,7 +306,7 @@ model Device {
   deviceType               DeviceType
   displayName              String?
   assignedDepartmentId     String?
-  assignedCounterStationId String?
+  assignedCounterStationId String?   @unique
   config                   Json?
   isActive                 Boolean   @default(true)
   createdAt                DateTime  @default(now())
@@ -309,7 +318,6 @@ model Device {
 
   @@index([hospitalId])
   @@index([assignedDepartmentId])
-  @@index([assignedCounterStationId])
 }
 
 model IntegrationConfig {
