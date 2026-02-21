@@ -24,7 +24,11 @@ Deliver production-ready backend foundations for API runtime, auth, realtime, jo
 
 ## Completed Slice (Current)
 - Runtime bootstrap implemented in `src/main.ts`.
-- Typed runtime env loading added in `src/runtime/env.ts`.
+- Typed runtime env loading added in `src/runtime/env.ts` for:
+   - `PORT`
+   - `DATABASE_URL`
+   - `JWT_ACCESS_TOKEN_SECRET`
+   - `JWT_REFRESH_TOKEN_SECRET`
 - Concrete HTTP API server added in `src/api/server.ts` with:
    - `GET /health`
    - Teller endpoints (`/teller/call-next`, `/teller/recall`, `/teller/start-serving`, `/teller/skip-no-show`, `/teller/complete`, `/teller/transfer`, `/teller/change-priority`)
