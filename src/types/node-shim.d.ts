@@ -2,6 +2,7 @@ declare module "node:http" {
   export interface IncomingMessage {
     method?: string;
     url?: string;
+    destroy(error?: Error): void;
     [Symbol.asyncIterator](): AsyncIterator<string | Uint8Array>;
   }
 

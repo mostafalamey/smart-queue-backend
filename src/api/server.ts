@@ -14,10 +14,19 @@ type JsonRecord = Record<string, unknown>;
 
 type RouteHandler<TPayload> = (payload: TPayload) => Promise<HttpResponse>;
 
+const MAX_JSON_BODY_BYTES = 1024 * 1024;
+
 class RequestValidationError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "RequestValidationError";
+  }
+}
+
+class PayloadTooLargeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PayloadTooLargeError";
   }
 }
 
@@ -43,10 +52,38 @@ const asRecord = (value: unknown): JsonRecord | null => {
   return value as JsonRecord;
 };
 
+const getChunkSize = (chunk: string | Uint8Array): number => {
+  if (typeof chunk === "string") {
+    return new TextEncoder().encode(chunk).length;
+  }
+
+  return chunk.byteLength;
+};
+
 const readJsonBody = async (request: IncomingMessage): Promise<JsonRecord> => {
   const chunks: string[] = [];
+  let totalBytes = 0;
+
+  const abortRequest = (): void => {
+    const requestWithDestroy = request as IncomingMessage & {
+      destroy?: (error?: Error) => void;
+    };
+
+    if (typeof requestWithDestroy.destroy === "function") {
+      requestWithDestroy.destroy();
+    }
+  };
 
   for await (const chunk of request) {
+    totalBytes += getChunkSize(chunk);
+
+    if (totalBytes > MAX_JSON_BODY_BYTES) {
+      abortRequest();
+      throw new PayloadTooLargeError(
+        `Request body exceeds ${MAX_JSON_BODY_BYTES} bytes`
+      );
+    }
+
     chunks.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
   }
 
@@ -68,6 +105,13 @@ const readJsonBody = async (request: IncomingMessage): Promise<JsonRecord> => {
 const invalidRequest = (response: ServerResponse, message: string): void => {
   json(response, 400, {
     code: "INVALID_REQUEST",
+    message,
+  });
+};
+
+const payloadTooLarge = (response: ServerResponse, message: string): void => {
+  json(response, 413, {
+    code: "PAYLOAD_TOO_LARGE",
     message,
   });
 };
@@ -205,6 +249,11 @@ const withPayload = async <TPayload>(
     const result = await handler(parsedPayload);
     json(response, result.status, result.body);
   } catch (error: unknown) {
+    if (error instanceof PayloadTooLargeError) {
+      payloadTooLarge(response, error.message);
+      return;
+    }
+
     if (error instanceof SyntaxError || error instanceof RequestValidationError) {
       const message =
         error instanceof SyntaxError ? "Invalid JSON payload" : error.message;

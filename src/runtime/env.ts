@@ -11,8 +11,8 @@ const parsePort = (rawPort: string | undefined): number => {
   }
 
   const parsed = Number.parseInt(rawPort, 10);
-  if (Number.isNaN(parsed) || parsed <= 0) {
-    throw new Error("PORT must be a positive integer");
+  if (Number.isNaN(parsed) || parsed <= 0 || parsed > 65535) {
+    throw new Error("PORT must be an integer between 1 and 65535");
   }
 
   return parsed;
