@@ -294,6 +294,7 @@ export class PrismaQueueEngineRepository implements QueueEngineRepository {
         calledAt: ticket.calledAt,
         servingStartedAt: ticket.servingStartedAt,
         completedAt: ticket.completedAt,
+        noShowAt: ticket.noShowAt,
         cancelledAt: ticket.cancelledAt,
         calledCounterStationId: ticket.calledCounterStationId,
         originTicketId: ticket.originTicketId,

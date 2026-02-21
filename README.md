@@ -16,3 +16,8 @@ Core API and queue engine service for Smart Queue (NestJS + PostgreSQL + Redis/B
 ## Branch Workflow
 - main: reviewed merges only
 - feature/*: one feature per branch/PR
+
+## Focused Queue Engine Tests (Phase 2)
+- Run from backend repo root: `./scripts/run-queue-engine-tests.ps1`
+- If PowerShell execution policy blocks scripts: `powershell -ExecutionPolicy Bypass -File .\scripts\run-queue-engine-tests.ps1`
+- CI also runs these focused tests on pull requests to `main` via `.github/workflows/queue-engine-tests.yml`.
