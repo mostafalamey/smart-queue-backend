@@ -123,7 +123,7 @@ const readJsonBody = async (request: IncomingMessage): Promise<JsonRecord> => {
   const record = asRecord(parsed);
 
   if (!record) {
-    throw new Error("Request body must be a JSON object");
+    throw new RequestValidationError("Request body must be a JSON object");
   }
 
   return record;
