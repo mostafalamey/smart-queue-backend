@@ -9,6 +9,8 @@ import { QueueActor } from "../queue-engine";
 import {
   AuthenticatedPrincipal,
   AuthTokenError,
+  LoginError,
+  loginWithPassword,
   verifyAccessToken,
 } from "../auth";
 
@@ -39,6 +41,13 @@ interface ParsedChangePriorityPayload extends ParsedTicketActionPayload {
   priorityWeight: number;
 }
 
+interface ParsedLoginPayload {
+  email: string;
+  password: string;
+  stationId?: string;
+  requestedRole?: AppRole;
+}
+
 class RequestValidationError extends Error {
   constructor(message: string) {
     super(message);
@@ -64,6 +73,13 @@ class ForbiddenError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ForbiddenError";
+  }
+}
+
+class TooManyRequestsError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "TooManyRequestsError";
   }
 }
 
@@ -166,6 +182,13 @@ const forbidden = (response: ServerResponse, message: string): void => {
   });
 };
 
+const tooManyRequests = (response: ServerResponse, message: string): void => {
+  json(response, 429, {
+    code: "TOO_MANY_REQUESTS",
+    message,
+  });
+};
+
 const getHeader = (request: IncomingMessage, name: string): string | undefined => {
   const headers = request.headers as Record<string, string | string[] | undefined>;
   const value = headers[name.toLowerCase()];
@@ -175,6 +198,86 @@ const getHeader = (request: IncomingMessage, name: string): string | undefined =
   }
 
   return value;
+};
+
+const LOGIN_IP_WINDOW_MS = 60 * 1000;
+const LOGIN_IP_MAX_ATTEMPTS = 20;
+const LOGIN_EMAIL_WINDOW_MS = 5 * 60 * 1000;
+const LOGIN_EMAIL_MAX_ATTEMPTS = 10;
+
+interface RateLimitBucket {
+  count: number;
+  resetAt: number;
+}
+
+const loginRateLimitByIp = new Map<string, RateLimitBucket>();
+const loginRateLimitByEmail = new Map<string, RateLimitBucket>();
+
+const consumeRateLimit = (
+  store: Map<string, RateLimitBucket>,
+  key: string,
+  maxAttempts: number,
+  windowMs: number,
+  errorMessage: string
+): void => {
+  const now = Date.now();
+  const existing = store.get(key);
+
+  if (!existing || existing.resetAt <= now) {
+    store.set(key, {
+      count: 1,
+      resetAt: now + windowMs,
+    });
+    return;
+  }
+
+  const nextCount = existing.count + 1;
+  store.set(key, {
+    count: nextCount,
+    resetAt: existing.resetAt,
+  });
+
+  if (nextCount > maxAttempts) {
+    throw new TooManyRequestsError(errorMessage);
+  }
+};
+
+const getRequestIpAddress = (request: IncomingMessage): string => {
+  const forwardedFor = getHeader(request, "x-forwarded-for");
+  if (forwardedFor) {
+    const firstIp = forwardedFor
+      .split(",")
+      .map((item) => item.trim())
+      .find((item) => item.length > 0);
+
+    if (firstIp) {
+      return firstIp;
+    }
+  }
+
+  return "unknown";
+};
+
+const applyLoginRateLimit = (
+  request: IncomingMessage,
+  email: string
+): void => {
+  const ipAddress = getRequestIpAddress(request);
+  consumeRateLimit(
+    loginRateLimitByIp,
+    ipAddress,
+    LOGIN_IP_MAX_ATTEMPTS,
+    LOGIN_IP_WINDOW_MS,
+    "Too many login attempts from this network. Please try again shortly."
+  );
+
+  consumeRateLimit(
+    loginRateLimitByEmail,
+    email.trim().toLowerCase(),
+    LOGIN_EMAIL_MAX_ATTEMPTS,
+    LOGIN_EMAIL_WINDOW_MS,
+    "Too many login attempts for this account. Please try again later."
+  );
 };
 
 const parseRole = (rawRole: string | undefined): AppRole | null => {
@@ -210,9 +313,7 @@ const getAuthenticatedPrincipal = (
 
   const bearerPrefix = "Bearer ";
   if (!authorizationHeader.startsWith(bearerPrefix)) {
-    throw new UnauthorizedError(
-      "Authorization header must use Bearer token"
-    );
+    throw new UnauthorizedError("Authorization header must use Bearer token");
   }
 
   const token = authorizationHeader.slice(bearerPrefix.length).trim();
@@ -286,6 +387,39 @@ const requireNumber = (payload: JsonRecord, key: string): number => {
   return value;
 };
 
+const optionalString = (payload: JsonRecord, key: string): string | undefined => {
+  const value = payload[key];
+
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (typeof value !== "string") {
+    throw new RequestValidationError(`${key} must be a string when provided`);
+  }
+
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    throw new RequestValidationError(`${key} must not be an empty string`);
+  }
+
+  return trimmed;
+};
+
+const optionalRole = (payload: JsonRecord, key: string): AppRole | undefined => {
+  const rawRole = optionalString(payload, key);
+  if (!rawRole) {
+    return undefined;
+  }
+
+  const role = parseRole(rawRole);
+  if (!role) {
+    throw new RequestValidationError(`${key} must be a valid AppRole`);
+  }
+
+  return role;
+};
+
 const parseCallNextPayload = (payload: JsonRecord): ParsedCallNextPayload => {
   return {
     serviceId: requireString(payload, "serviceId"),
@@ -336,6 +470,15 @@ const parseChangePriorityPayload = (
   };
 };
 
+const parseLoginPayload = (payload: JsonRecord): ParsedLoginPayload => {
+  return {
+    email: requireString(payload, "email"),
+    password: requireString(payload, "password"),
+    stationId: optionalString(payload, "stationId"),
+    requestedRole: optionalRole(payload, "requestedRole"),
+  };
+};
+
 const withPayload = async <TPayload>(
   request: IncomingMessage,
   response: ServerResponse,
@@ -363,6 +506,11 @@ const withPayload = async <TPayload>(
       return;
     }
 
+    if (error instanceof TooManyRequestsError) {
+      tooManyRequests(response, error.message);
+      return;
+    }
+
     if (error instanceof SyntaxError) {
       invalidRequest(response, "Invalid JSON payload");
       return;
@@ -370,6 +518,14 @@ const withPayload = async <TPayload>(
 
     if (error instanceof RequestValidationError) {
       invalidRequest(response, error.message);
+      return;
+    }
+
+    if (error instanceof LoginError) {
+      json(response, error.status, {
+        code: error.code,
+        message: error.message,
+      });
       return;
     }
 
@@ -392,6 +548,9 @@ const withAuthorizedTellerPayload = async <TPayload>(
 
 export interface ApiSecurityConfig {
   jwtAccessTokenSecret: string;
+  jwtRefreshTokenSecret: string;
+  jwtAccessTokenExpiresInSeconds: number;
+  jwtRefreshTokenExpiresInSeconds: number;
 }
 
 export const createApiServer = (
@@ -411,6 +570,27 @@ export const createApiServer = (
       return;
     }
 
+    if (method === "POST" && path === "/auth/login") {
+      await withPayload(request, response, parseLoginPayload, async (payload) => {
+        applyLoginRateLimit(request, payload.email);
+
+        const result = await loginWithPassword(prismaClient, payload, {
+          jwtAccessTokenSecret: securityConfig.jwtAccessTokenSecret,
+          jwtRefreshTokenSecret: securityConfig.jwtRefreshTokenSecret,
+          accessTokenExpiresInSeconds:
+            securityConfig.jwtAccessTokenExpiresInSeconds,
+          refreshTokenExpiresInSeconds:
+            securityConfig.jwtRefreshTokenExpiresInSeconds,
+        });
+
+        return {
+          status: 200,
+          body: result,
+        };
+      });
+      return;
+    }
+
     if (method === "POST" && path === "/teller/call-next") {
       await withAuthorizedTellerPayload(
         request,
@@ -418,12 +598,12 @@ export const createApiServer = (
         parseCallNextPayload,
         securityConfig.jwtAccessTokenSecret,
         (payload, actor) => {
-        return tellerHandlers.callNext({
-          serviceId: payload.serviceId,
-          stationId: requireStationId(actor),
-          actor,
-        });
-      }
+          return tellerHandlers.callNext({
+            serviceId: payload.serviceId,
+            stationId: requireStationId(actor),
+            actor,
+          });
+        }
       );
       return;
     }
@@ -435,11 +615,11 @@ export const createApiServer = (
         parseTicketActionPayload,
         securityConfig.jwtAccessTokenSecret,
         (payload, actor) => {
-        return tellerHandlers.recall({
-          ticketId: payload.ticketId,
-          actor,
-        });
-      }
+          return tellerHandlers.recall({
+            ticketId: payload.ticketId,
+            actor,
+          });
+        }
       );
       return;
     }
@@ -451,11 +631,11 @@ export const createApiServer = (
         parseTicketActionPayload,
         securityConfig.jwtAccessTokenSecret,
         (payload, actor) => {
-        return tellerHandlers.startServing({
-          ticketId: payload.ticketId,
-          actor,
-        });
-      }
+          return tellerHandlers.startServing({
+            ticketId: payload.ticketId,
+            actor,
+          });
+        }
       );
       return;
     }
@@ -467,11 +647,11 @@ export const createApiServer = (
         parseTicketActionPayload,
         securityConfig.jwtAccessTokenSecret,
         (payload, actor) => {
-        return tellerHandlers.skipNoShow({
-          ticketId: payload.ticketId,
-          actor,
-        });
-      }
+          return tellerHandlers.skipNoShow({
+            ticketId: payload.ticketId,
+            actor,
+          });
+        }
       );
       return;
     }
@@ -483,11 +663,11 @@ export const createApiServer = (
         parseTicketActionPayload,
         securityConfig.jwtAccessTokenSecret,
         (payload, actor) => {
-        return tellerHandlers.complete({
-          ticketId: payload.ticketId,
-          actor,
-        });
-      }
+          return tellerHandlers.complete({
+            ticketId: payload.ticketId,
+            actor,
+          });
+        }
       );
       return;
     }

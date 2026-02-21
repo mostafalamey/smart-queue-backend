@@ -16,7 +16,7 @@ Deliver production-ready backend foundations for API runtime, auth, realtime, jo
 - [x] Add environment configuration contract for backend runtime (API port, DATABASE_URL, auth secrets).
 - [x] Wire Prisma client lifecycle into runtime startup/shutdown.
 - [x] Wire teller API handlers through concrete HTTP routes.
-- [ ] Implement authentication baseline (email/password, hash verification, token issuance skeleton).
+- [x] Implement authentication baseline (email/password, hash verification, token issuance skeleton).
 - [ ] Add RBAC middleware/guard enforcement path for protected API routes.
 - [ ] Add realtime broadcasting skeleton for queue and now-serving updates.
 - [ ] Add async jobs baseline (Redis + queue worker skeleton for retries/scheduled jobs).
@@ -36,10 +36,12 @@ Deliver production-ready backend foundations for API runtime, auth, realtime, jo
 - Bearer access-token verification (`HS256`) added for teller endpoints with server-side principal extraction from `Authorization` header.
 - Teller RBAC checks now use token-derived principal role and block unauthorized/forbidden requests before queue actions.
 - Shared teller auth wrapper now centralizes principal extraction and RBAC guard invocation before route handlers.
+- `POST /auth/login` added with email/password verification, role resolution, and access/refresh token issuance skeleton.
+- Auth module now includes password-hash verification helpers and JWT signing utilities for baseline login flow.
 
 ## Next Slice (Immediate)
-1. Implement login credential verification and token issuance skeleton.
-2. Add initial app-level request context for authenticated principal mapping.
+1. Add initial app-level request context for authenticated principal mapping.
+2. Add `/auth/refresh` and `/auth/logout` skeleton endpoints.
 
 ## First Implementation Slice (Completed)
 1. Runtime bootstrap
