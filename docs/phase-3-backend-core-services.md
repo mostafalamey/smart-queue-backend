@@ -17,6 +17,8 @@ Deliver production-ready backend foundations for API runtime, auth, realtime, jo
 - [x] Wire Prisma client lifecycle into runtime startup/shutdown.
 - [x] Wire teller API handlers through concrete HTTP routes.
 - [x] Implement authentication baseline (email/password, hash verification, token issuance skeleton).
+- [x] Add initial app-level request context for authenticated principal mapping.
+- [x] Add `/auth/refresh` and `/auth/logout` skeleton endpoints.
 - [ ] Add RBAC middleware/guard enforcement path for protected API routes.
 - [ ] Add realtime broadcasting skeleton for queue and now-serving updates.
 - [ ] Add async jobs baseline (Redis + queue worker skeleton for retries/scheduled jobs).
@@ -38,10 +40,14 @@ Deliver production-ready backend foundations for API runtime, auth, realtime, jo
 - Shared teller auth wrapper now centralizes principal extraction and RBAC guard invocation before route handlers.
 - `POST /auth/login` added with email/password verification, role resolution, and access/refresh token issuance skeleton.
 - Auth module now includes password-hash verification helpers and JWT signing utilities for baseline login flow.
+- App-level request context now generates/propagates `x-request-id` and maps authenticated principal before teller route execution.
+- `POST /auth/refresh` added with refresh-token verification and role-aware token re-issuance baseline.
+- `POST /auth/logout` skeleton added with refresh-token validation and no-op revocation response until persistence layer is introduced.
+- Added focused auth refresh tests in `src/auth/__tests__/refresh.test.ts`.
 
 ## Next Slice (Immediate)
-1. Add initial app-level request context for authenticated principal mapping.
-2. Add `/auth/refresh` and `/auth/logout` skeleton endpoints.
+1. Add realtime broadcasting skeleton for queue and now-serving updates.
+2. Add async jobs baseline (Redis + queue worker skeleton for retries/scheduled jobs).
 
 ## First Implementation Slice (Completed)
 1. Runtime bootstrap

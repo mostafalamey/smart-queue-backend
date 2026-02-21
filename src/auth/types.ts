@@ -14,6 +14,13 @@ export interface AccessTokenClaims {
   iat?: number;
 }
 
+export interface RefreshTokenClaims {
+  sub: string;
+  typ: "refresh";
+  exp?: number;
+  iat?: number;
+}
+
 export class AuthTokenError extends Error {
   constructor(message: string) {
     super(message);
