@@ -15,7 +15,7 @@ export class ApiGatewayController {
   @All("*")
   async handle(
     @Req() request: Request,
-    @Res() response: Response
+    @Res({ passthrough: false }) response: Response
   ): Promise<void> {
     await this.requestHandler(
       request as unknown as IncomingMessage,

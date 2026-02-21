@@ -2,13 +2,13 @@ services:
   api:
     image: node:22-alpine
     working_dir: /app
-    command: sh -c "npm ci && npm run start"
+    command: sh -c "if [ ! -d node_modules ]; then npm ci; fi && npm run build && npm run start"
     ports:
       - "${PORT:-3000}:3000"
     env_file:
       - .env
     environment:
-      DATABASE_URL: ${DATABASE_URL}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-smart_queue}:${POSTGRES_PASSWORD:-smart_queue}@postgres:5432/${POSTGRES_DB:-smart_queue}}
       JWT_ACCESS_TOKEN_SECRET: ${JWT_ACCESS_TOKEN_SECRET}
       JWT_REFRESH_TOKEN_SECRET: ${JWT_REFRESH_TOKEN_SECRET}
       JWT_ACCESS_TOKEN_EXPIRES_IN_SECONDS: ${JWT_ACCESS_TOKEN_EXPIRES_IN_SECONDS:-900}
@@ -43,8 +43,12 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
     ports:
       - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
 
 volumes:
   postgres_data:
+  redis_data:

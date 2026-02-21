@@ -133,7 +133,7 @@ export const createArgon2idPasswordHash = async (
   return argon2.hash(password, {
     type: argon2.argon2id,
     memoryCost: 19 * 1024,
-    timeCost: 2,
+    timeCost: 3,
     parallelism: 1,
     hashLength: 32,
   });
