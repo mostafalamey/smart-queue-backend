@@ -4,6 +4,9 @@ export interface RuntimeEnv {
   port: number;
   databaseUrl: string;
   redisUrl: string;
+  asyncJobsWorkerConcurrency: number;
+  asyncJobsRetainCompletedJobs: number;
+  asyncJobsRetainFailedJobs: number;
   jwtAccessTokenSecret: string;
   jwtRefreshTokenSecret: string;
   jwtAccessTokenExpiresInSeconds: number;
@@ -107,6 +110,21 @@ export const loadRuntimeEnv = (): RuntimeEnv => {
     port: parsePort(env.PORT),
     databaseUrl: requireEnv(env.DATABASE_URL, "DATABASE_URL"),
     redisUrl: requireEnv(env.REDIS_URL, "REDIS_URL"),
+    asyncJobsWorkerConcurrency: parsePositiveIntegerWithDefault(
+      env.ASYNC_JOBS_WORKER_CONCURRENCY,
+      "ASYNC_JOBS_WORKER_CONCURRENCY",
+      1
+    ),
+    asyncJobsRetainCompletedJobs: parsePositiveIntegerWithDefault(
+      env.ASYNC_JOBS_RETAIN_COMPLETED_JOBS,
+      "ASYNC_JOBS_RETAIN_COMPLETED_JOBS",
+      1_000
+    ),
+    asyncJobsRetainFailedJobs: parsePositiveIntegerWithDefault(
+      env.ASYNC_JOBS_RETAIN_FAILED_JOBS,
+      "ASYNC_JOBS_RETAIN_FAILED_JOBS",
+      1_000
+    ),
     jwtAccessTokenSecret: requireEnv(
       env.JWT_ACCESS_TOKEN_SECRET,
       "JWT_ACCESS_TOKEN_SECRET"

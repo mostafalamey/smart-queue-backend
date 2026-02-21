@@ -30,7 +30,12 @@ export const bootstrap = async (): Promise<RuntimeHandle> => {
   const realtimeBroadcaster = new SocketIoQueueRealtimeBroadcaster(
     realtimeSocketServer
   );
-  const jobsRuntime = createAsyncJobsRuntime(env.redisUrl);
+  const jobsRuntime = createAsyncJobsRuntime(
+    env.redisUrl,
+    env.asyncJobsWorkerConcurrency,
+    env.asyncJobsRetainCompletedJobs,
+    env.asyncJobsRetainFailedJobs
+  );
   const requestHandler = createApiRequestHandler(prismaClient, {
     jwtAccessTokenSecret: env.jwtAccessTokenSecret,
     jwtRefreshTokenSecret: env.jwtRefreshTokenSecret,
@@ -45,6 +50,7 @@ export const bootstrap = async (): Promise<RuntimeHandle> => {
   attachRealtimeSocketServer(realtimeSocketServer, app.getHttpServer());
 
   let prismaConnected = false;
+  let jobsStarted = false;
   let jobsReady = false;
   let appListening = false;
   let realtimeServerAttached = true;
@@ -83,8 +89,9 @@ export const bootstrap = async (): Promise<RuntimeHandle> => {
       realtimeServerAttached = false;
     }
 
-    if (jobsReady) {
+    if (jobsStarted) {
       await jobsRuntime.stop().catch(() => undefined);
+      jobsStarted = false;
       jobsReady = false;
     }
 
@@ -96,6 +103,7 @@ export const bootstrap = async (): Promise<RuntimeHandle> => {
   try {
     await prismaClient.$connect();
     prismaConnected = true;
+    jobsStarted = true;
     await jobsRuntime.start();
     jobsReady = true;
     await app.listen(env.port);
