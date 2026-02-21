@@ -35,11 +35,11 @@ Deliver production-ready backend foundations for API runtime, auth, realtime, jo
 - Prisma client startup/shutdown lifecycle wired into bootstrap.
 - Bearer access-token verification (`HS256`) added for teller endpoints with server-side principal extraction from `Authorization` header.
 - Teller RBAC checks now use token-derived principal role and block unauthorized/forbidden requests before queue actions.
+- Shared teller auth wrapper now centralizes principal extraction and RBAC guard invocation before route handlers.
 
 ## Next Slice (Immediate)
 1. Implement login credential verification and token issuance skeleton.
-2. Introduce shared auth middleware wrapper to reduce per-route auth repetition.
-3. Add initial app-level request context for authenticated principal mapping.
+2. Add initial app-level request context for authenticated principal mapping.
 
 ## First Implementation Slice (Completed)
 1. Runtime bootstrap

@@ -377,6 +377,19 @@ const withPayload = async <TPayload>(
   }
 };
 
+const withAuthorizedTellerPayload = async <TPayload>(
+  request: IncomingMessage,
+  response: ServerResponse,
+  parse: (payload: JsonRecord) => TPayload,
+  jwtAccessTokenSecret: string,
+  handler: (payload: TPayload, actor: QueueActor) => Promise<HttpResponse>
+): Promise<void> => {
+  await withPayload(request, response, parse, (payload) => {
+    const actor = getAuthorizedTellerActor(request, jwtAccessTokenSecret);
+    return handler(payload, actor);
+  });
+};
+
 export interface ApiSecurityConfig {
   jwtAccessTokenSecret: string;
 }
@@ -399,12 +412,12 @@ export const createApiServer = (
     }
 
     if (method === "POST" && path === "/teller/call-next") {
-      await withPayload(request, response, parseCallNextPayload, (payload) => {
-        const actor = getAuthorizedTellerActor(
-          request,
-          securityConfig.jwtAccessTokenSecret
-        );
-
+      await withAuthorizedTellerPayload(
+        request,
+        response,
+        parseCallNextPayload,
+        securityConfig.jwtAccessTokenSecret,
+        (payload, actor) => {
         return tellerHandlers.callNext({
           serviceId: payload.serviceId,
           stationId: requireStationId(actor),
@@ -416,12 +429,12 @@ export const createApiServer = (
     }
 
     if (method === "POST" && path === "/teller/recall") {
-      await withPayload(request, response, parseTicketActionPayload, (payload) => {
-        const actor = getAuthorizedTellerActor(
-          request,
-          securityConfig.jwtAccessTokenSecret
-        );
-
+      await withAuthorizedTellerPayload(
+        request,
+        response,
+        parseTicketActionPayload,
+        securityConfig.jwtAccessTokenSecret,
+        (payload, actor) => {
         return tellerHandlers.recall({
           ticketId: payload.ticketId,
           actor,
@@ -432,12 +445,12 @@ export const createApiServer = (
     }
 
     if (method === "POST" && path === "/teller/start-serving") {
-      await withPayload(request, response, parseTicketActionPayload, (payload) => {
-        const actor = getAuthorizedTellerActor(
-          request,
-          securityConfig.jwtAccessTokenSecret
-        );
-
+      await withAuthorizedTellerPayload(
+        request,
+        response,
+        parseTicketActionPayload,
+        securityConfig.jwtAccessTokenSecret,
+        (payload, actor) => {
         return tellerHandlers.startServing({
           ticketId: payload.ticketId,
           actor,
@@ -448,12 +461,12 @@ export const createApiServer = (
     }
 
     if (method === "POST" && path === "/teller/skip-no-show") {
-      await withPayload(request, response, parseTicketActionPayload, (payload) => {
-        const actor = getAuthorizedTellerActor(
-          request,
-          securityConfig.jwtAccessTokenSecret
-        );
-
+      await withAuthorizedTellerPayload(
+        request,
+        response,
+        parseTicketActionPayload,
+        securityConfig.jwtAccessTokenSecret,
+        (payload, actor) => {
         return tellerHandlers.skipNoShow({
           ticketId: payload.ticketId,
           actor,
@@ -464,12 +477,12 @@ export const createApiServer = (
     }
 
     if (method === "POST" && path === "/teller/complete") {
-      await withPayload(request, response, parseTicketActionPayload, (payload) => {
-        const actor = getAuthorizedTellerActor(
-          request,
-          securityConfig.jwtAccessTokenSecret
-        );
-
+      await withAuthorizedTellerPayload(
+        request,
+        response,
+        parseTicketActionPayload,
+        securityConfig.jwtAccessTokenSecret,
+        (payload, actor) => {
         return tellerHandlers.complete({
           ticketId: payload.ticketId,
           actor,
@@ -480,16 +493,12 @@ export const createApiServer = (
     }
 
     if (method === "POST" && path === "/teller/transfer") {
-      await withPayload(
+      await withAuthorizedTellerPayload(
         request,
         response,
         parseTransferPayload,
-        async (payload) => {
-          const actor = getAuthorizedTellerActor(
-            request,
-            securityConfig.jwtAccessTokenSecret
-          );
-
+        securityConfig.jwtAccessTokenSecret,
+        async (payload, actor) => {
           return tellerHandlers.transfer({
             ticketId: payload.ticketId,
             destination: payload.destination,
@@ -501,16 +510,12 @@ export const createApiServer = (
     }
 
     if (method === "POST" && path === "/teller/change-priority") {
-      await withPayload(
+      await withAuthorizedTellerPayload(
         request,
         response,
         parseChangePriorityPayload,
-        (payload) => {
-          const actor = getAuthorizedTellerActor(
-            request,
-            securityConfig.jwtAccessTokenSecret
-          );
-
+        securityConfig.jwtAccessTokenSecret,
+        (payload, actor) => {
           return tellerHandlers.changePriority({
             ticketId: payload.ticketId,
             priorityCategoryId: payload.priorityCategoryId,
