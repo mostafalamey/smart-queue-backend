@@ -1,20 +1,41 @@
 import { createServer, IncomingMessage, Server, ServerResponse } from "node:http";
-import { PrismaClient } from "@prisma/client";
+import { AppRole, PrismaClient } from "@prisma/client";
 import { createTellerApiHandlers } from "./teller";
 import { HttpResponse } from "./http";
-import {
-  CallNextRequest,
-  ChangePriorityRequest,
-  TicketActionRequest,
-  TransferTicketRequest,
-} from "./teller";
-import { ActorType, QueueActor } from "../queue-engine";
+import { QueueActor } from "../queue-engine";
 
 type JsonRecord = Record<string, unknown>;
 
 type RouteHandler<TPayload> = (payload: TPayload) => Promise<HttpResponse>;
 
 const MAX_JSON_BODY_BYTES = 1024 * 1024;
+
+interface AuthenticatedPrincipal {
+  userId: string;
+  role: AppRole;
+  stationId?: string;
+}
+
+interface ParsedCallNextPayload {
+  serviceId: string;
+}
+
+interface ParsedTicketActionPayload {
+  ticketId: string;
+}
+
+interface ParsedTransferPayload extends ParsedTicketActionPayload {
+  destination: {
+    departmentId: string;
+    serviceId: string;
+    ticketDate: Date;
+  };
+}
+
+interface ParsedChangePriorityPayload extends ParsedTicketActionPayload {
+  priorityCategoryId: string;
+  priorityWeight: number;
+}
 
 class RequestValidationError extends Error {
   constructor(message: string) {
@@ -30,13 +51,19 @@ class PayloadTooLargeError extends Error {
   }
 }
 
-const actorTypes: ActorType[] = [
-  "USER",
-  "SYSTEM",
-  "PATIENT_WHATSAPP",
-  "PATIENT_PWA",
-  "KIOSK",
-];
+class UnauthorizedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "UnauthorizedError";
+  }
+}
+
+class ForbiddenError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ForbiddenError";
+  }
+}
 
 const json = (response: ServerResponse, status: number, body: unknown): void => {
   response.statusCode = status;
@@ -123,6 +150,99 @@ const internalServerError = (response: ServerResponse): void => {
   });
 };
 
+const unauthorized = (response: ServerResponse, message: string): void => {
+  json(response, 401, {
+    code: "UNAUTHORIZED",
+    message,
+  });
+};
+
+const forbidden = (response: ServerResponse, message: string): void => {
+  json(response, 403, {
+    code: "FORBIDDEN",
+    message,
+  });
+};
+
+const getHeader = (request: IncomingMessage, name: string): string | undefined => {
+  const headers = request.headers as Record<string, string | string[] | undefined>;
+  const value = headers[name.toLowerCase()];
+
+  if (Array.isArray(value)) {
+    return value[0];
+  }
+
+  return value;
+};
+
+const parseRole = (rawRole: string | undefined): AppRole | null => {
+  if (!rawRole) {
+    return null;
+  }
+
+  const allowed = Object.values(AppRole) as string[];
+  if (!allowed.includes(rawRole)) {
+    return null;
+  }
+
+  return rawRole as AppRole;
+};
+
+const isAllowedTellerRole = (role: AppRole): boolean => {
+  return (
+    role === AppRole.ADMIN ||
+    role === AppRole.IT ||
+    role === AppRole.MANAGER ||
+    role === AppRole.STAFF
+  );
+};
+
+const getAuthenticatedPrincipal = (
+  request: IncomingMessage
+): AuthenticatedPrincipal => {
+  const userId = getHeader(request, "x-user-id");
+  if (!userId || userId.trim().length === 0) {
+    throw new UnauthorizedError("Missing authenticated user id");
+  }
+
+  const role = parseRole(getHeader(request, "x-user-role"));
+  if (!role) {
+    throw new ForbiddenError(
+      "Missing or invalid user role (expected ADMIN, IT, MANAGER, or STAFF)"
+    );
+  }
+
+  const stationId = getHeader(request, "x-station-id");
+
+  return {
+    userId,
+    role,
+    stationId: stationId && stationId.trim().length > 0 ? stationId : undefined,
+  };
+};
+
+const getAuthorizedTellerActor = (request: IncomingMessage): QueueActor => {
+  const principal = getAuthenticatedPrincipal(request);
+
+  if (!isAllowedTellerRole(principal.role)) {
+    throw new ForbiddenError("Authenticated role is not allowed for teller actions");
+  }
+
+  return {
+    actorType: "USER",
+    actorUserId: principal.userId,
+    stationId: principal.stationId,
+  };
+};
+
+const requireStationId = (actor: QueueActor): string => {
+  if (!actor.stationId || actor.stationId.trim().length === 0) {
+    throw new ForbiddenError("Authenticated actor is not bound to a station");
+  }
+
+  return actor.stationId;
+};
+
 const requireString = (payload: JsonRecord, key: string): string => {
   const value = payload[key];
   if (typeof value !== "string" || value.trim().length === 0) {
@@ -141,65 +261,21 @@ const requireNumber = (payload: JsonRecord, key: string): number => {
   return value;
 };
 
-const parseActor = (payload: JsonRecord): QueueActor => {
-  const actorPayload = asRecord(payload.actor);
-  if (!actorPayload) {
-    throw new RequestValidationError("actor is required");
-  }
-
-  const actorType = requireString(actorPayload, "actorType");
-  if (!actorTypes.includes(actorType as ActorType)) {
-    throw new RequestValidationError(
-      `actor.actorType must be one of: ${actorTypes.join(", ")}`
-    );
-  }
-
-  const actorUserIdValue = actorPayload.actorUserId;
-  if (
-    actorUserIdValue !== undefined &&
-    (typeof actorUserIdValue !== "string" || actorUserIdValue.trim().length === 0)
-  ) {
-    throw new RequestValidationError(
-      "actor.actorUserId must be a non-empty string when provided"
-    );
-  }
-
-  const stationIdValue = actorPayload.stationId;
-  if (
-    stationIdValue !== undefined &&
-    (typeof stationIdValue !== "string" || stationIdValue.trim().length === 0)
-  ) {
-    throw new RequestValidationError(
-      "actor.stationId must be a non-empty string when provided"
-    );
-  }
-
-  return {
-    actorType: actorType as ActorType,
-    actorUserId:
-      typeof actorUserIdValue === "string" ? actorUserIdValue : undefined,
-    stationId: typeof stationIdValue === "string" ? stationIdValue : undefined,
-  };
-};
-
-const parseCallNextRequest = (payload: JsonRecord): CallNextRequest => {
+const parseCallNextPayload = (payload: JsonRecord): ParsedCallNextPayload => {
   return {
     serviceId: requireString(payload, "serviceId"),
-    stationId: requireString(payload, "stationId"),
-    actor: parseActor(payload),
   };
 };
 
-const parseTicketActionRequest = (payload: JsonRecord): TicketActionRequest => {
+const parseTicketActionPayload = (
+  payload: JsonRecord
+): ParsedTicketActionPayload => {
   return {
     ticketId: requireString(payload, "ticketId"),
-    actor: parseActor(payload),
   };
 };
 
-const parseTransferTicketRequest = (
-  payload: JsonRecord
-): TransferTicketRequest => {
+const parseTransferPayload = (payload: JsonRecord): ParsedTransferPayload => {
   const destinationPayload = asRecord(payload.destination);
   if (!destinationPayload) {
     throw new RequestValidationError("destination is required");
@@ -215,7 +291,6 @@ const parseTransferTicketRequest = (
 
   return {
     ticketId: requireString(payload, "ticketId"),
-    actor: parseActor(payload),
     destination: {
       departmentId: requireString(destinationPayload, "departmentId"),
       serviceId: requireString(destinationPayload, "serviceId"),
@@ -224,14 +299,13 @@ const parseTransferTicketRequest = (
   };
 };
 
-const parseChangePriorityRequest = (
+const parseChangePriorityPayload = (
   payload: JsonRecord
-): ChangePriorityRequest => {
+): ParsedChangePriorityPayload => {
   const priorityWeight = requireNumber(payload, "priorityWeight");
 
   return {
     ticketId: requireString(payload, "ticketId"),
-    actor: parseActor(payload),
     priorityCategoryId: requireString(payload, "priorityCategoryId"),
     priorityWeight,
   };
@@ -251,6 +325,16 @@ const withPayload = async <TPayload>(
   } catch (error: unknown) {
     if (error instanceof PayloadTooLargeError) {
       payloadTooLarge(response, error.message);
+      return;
+    }
+
+    if (error instanceof UnauthorizedError) {
+      unauthorized(response, error.message);
+      return;
+    }
+
+    if (error instanceof ForbiddenError) {
+      forbidden(response, error.message);
       return;
     }
 
@@ -280,36 +364,67 @@ export const createApiServer = (prismaClient: PrismaClient): Server => {
     }
 
     if (method === "POST" && path === "/teller/call-next") {
-      await withPayload(request, response, parseCallNextRequest, (payload) =>
-        tellerHandlers.callNext(payload)
+      await withPayload(request, response, parseCallNextPayload, (payload) => {
+        const actor = getAuthorizedTellerActor(request);
+
+        return tellerHandlers.callNext({
+          serviceId: payload.serviceId,
+          stationId: requireStationId(actor),
+          actor,
+        });
+      }
       );
       return;
     }
 
     if (method === "POST" && path === "/teller/recall") {
-      await withPayload(request, response, parseTicketActionRequest, (payload) =>
-        tellerHandlers.recall(payload)
+      await withPayload(request, response, parseTicketActionPayload, (payload) => {
+        const actor = getAuthorizedTellerActor(request);
+
+        return tellerHandlers.recall({
+          ticketId: payload.ticketId,
+          actor,
+        });
+      }
       );
       return;
     }
 
     if (method === "POST" && path === "/teller/start-serving") {
-      await withPayload(request, response, parseTicketActionRequest, (payload) =>
-        tellerHandlers.startServing(payload)
+      await withPayload(request, response, parseTicketActionPayload, (payload) => {
+        const actor = getAuthorizedTellerActor(request);
+
+        return tellerHandlers.startServing({
+          ticketId: payload.ticketId,
+          actor,
+        });
+      }
       );
       return;
     }
 
     if (method === "POST" && path === "/teller/skip-no-show") {
-      await withPayload(request, response, parseTicketActionRequest, (payload) =>
-        tellerHandlers.skipNoShow(payload)
+      await withPayload(request, response, parseTicketActionPayload, (payload) => {
+        const actor = getAuthorizedTellerActor(request);
+
+        return tellerHandlers.skipNoShow({
+          ticketId: payload.ticketId,
+          actor,
+        });
+      }
       );
       return;
     }
 
     if (method === "POST" && path === "/teller/complete") {
-      await withPayload(request, response, parseTicketActionRequest, (payload) =>
-        tellerHandlers.complete(payload)
+      await withPayload(request, response, parseTicketActionPayload, (payload) => {
+        const actor = getAuthorizedTellerActor(request);
+
+        return tellerHandlers.complete({
+          ticketId: payload.ticketId,
+          actor,
+        });
+      }
       );
       return;
     }
@@ -318,15 +433,35 @@ export const createApiServer = (prismaClient: PrismaClient): Server => {
       await withPayload(
         request,
         response,
-        parseTransferTicketRequest,
-        async (payload) => tellerHandlers.transfer(payload)
+        parseTransferPayload,
+        async (payload) => {
+          const actor = getAuthorizedTellerActor(request);
+
+          return tellerHandlers.transfer({
+            ticketId: payload.ticketId,
+            destination: payload.destination,
+            actor,
+          });
+        }
       );
       return;
     }
 
     if (method === "POST" && path === "/teller/change-priority") {
-      await withPayload(request, response, parseChangePriorityRequest, (payload) =>
-        tellerHandlers.changePriority(payload)
+      await withPayload(
+        request,
+        response,
+        parseChangePriorityPayload,
+        (payload) => {
+          const actor = getAuthorizedTellerActor(request);
+
+          return tellerHandlers.changePriority({
+            ticketId: payload.ticketId,
+            priorityCategoryId: payload.priorityCategoryId,
+            priorityWeight: payload.priorityWeight,
+            actor,
+          });
+        }
       );
       return;
     }
