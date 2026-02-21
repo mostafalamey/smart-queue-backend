@@ -13,6 +13,7 @@ Core API and queue engine service for Smart Queue (NestJS + PostgreSQL + Redis/B
 - Phase 2 started on feature branch (`queue engine core service and rules`)
 - Phase 2 includes framework-agnostic teller API handlers wired to queue engine service
 - Phase 3 started on `feature/backend-core-services` with initial checklist in `docs/phase-3-backend-core-services.md`
+- Phase 3 auth/RBAC foundation slice started on `feature/backend-auth-rbac-foundation`
 
 ## Branch Workflow
 - main: reviewed merges only
