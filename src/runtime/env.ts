@@ -3,7 +3,12 @@ export interface RuntimeEnv {
   databaseUrl: string;
   jwtAccessTokenSecret: string;
   jwtRefreshTokenSecret: string;
+  jwtAccessTokenExpiresInSeconds: number;
+  jwtRefreshTokenExpiresInSeconds: number;
 }
+
+const DEFAULT_ACCESS_TOKEN_EXPIRES_IN_SECONDS = 15 * 60;
+const DEFAULT_REFRESH_TOKEN_EXPIRES_IN_SECONDS = 7 * 24 * 60 * 60;
 
 const parsePort = (rawPort: string | undefined): number => {
   if (!rawPort) {
@@ -30,6 +35,27 @@ const requireEnv = (value: string | undefined, key: string): string => {
   return value;
 };
 
+const parsePositiveIntegerWithDefault = (
+  rawValue: string | undefined,
+  key: string,
+  defaultValue: number
+): number => {
+  if (!rawValue || rawValue.trim().length === 0) {
+    return defaultValue;
+  }
+
+  if (!/^\d+$/.test(rawValue)) {
+    throw new Error(`${key} must be a positive integer`);
+  }
+
+  const parsed = Number.parseInt(rawValue, 10);
+  if (Number.isNaN(parsed) || parsed <= 0) {
+    throw new Error(`${key} must be a positive integer`);
+  }
+
+  return parsed;
+};
+
 export const loadRuntimeEnv = (): RuntimeEnv => {
   const env = process.env as Record<string, string | undefined>;
 
@@ -43,6 +69,16 @@ export const loadRuntimeEnv = (): RuntimeEnv => {
     jwtRefreshTokenSecret: requireEnv(
       env.JWT_REFRESH_TOKEN_SECRET,
       "JWT_REFRESH_TOKEN_SECRET"
+    ),
+    jwtAccessTokenExpiresInSeconds: parsePositiveIntegerWithDefault(
+      env.JWT_ACCESS_TOKEN_EXPIRES_IN_SECONDS,
+      "JWT_ACCESS_TOKEN_EXPIRES_IN_SECONDS",
+      DEFAULT_ACCESS_TOKEN_EXPIRES_IN_SECONDS
+    ),
+    jwtRefreshTokenExpiresInSeconds: parsePositiveIntegerWithDefault(
+      env.JWT_REFRESH_TOKEN_EXPIRES_IN_SECONDS,
+      "JWT_REFRESH_TOKEN_EXPIRES_IN_SECONDS",
+      DEFAULT_REFRESH_TOKEN_EXPIRES_IN_SECONDS
     ),
   };
 };

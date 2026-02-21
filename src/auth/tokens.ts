@@ -4,6 +4,8 @@ import { createHmac } from "node:crypto";
 export interface TokenIssuerConfig {
   jwtAccessTokenSecret: string;
   jwtRefreshTokenSecret: string;
+  accessTokenExpiresInSeconds?: number;
+  refreshTokenExpiresInSeconds?: number;
 }
 
 export interface TokenIssuePayload {
@@ -20,8 +22,8 @@ export interface IssuedAuthTokens {
   refreshTokenExpiresInSeconds: number;
 }
 
-const ACCESS_TOKEN_EXPIRES_IN_SECONDS = 15 * 60;
-const REFRESH_TOKEN_EXPIRES_IN_SECONDS = 7 * 24 * 60 * 60;
+const DEFAULT_ACCESS_TOKEN_EXPIRES_IN_SECONDS = 15 * 60;
+const DEFAULT_REFRESH_TOKEN_EXPIRES_IN_SECONDS = 7 * 24 * 60 * 60;
 
 const toBase64Url = (value: string): string => {
   return Buffer.from(value, "utf8")
@@ -59,6 +61,10 @@ export const issueAuthTokens = (
   config: TokenIssuerConfig
 ): IssuedAuthTokens => {
   const issuedAt = Math.floor(Date.now() / 1000);
+  const accessTokenExpiresInSeconds =
+    config.accessTokenExpiresInSeconds ?? DEFAULT_ACCESS_TOKEN_EXPIRES_IN_SECONDS;
+  const refreshTokenExpiresInSeconds =
+    config.refreshTokenExpiresInSeconds ?? DEFAULT_REFRESH_TOKEN_EXPIRES_IN_SECONDS;
 
   const accessToken = signJwt(
     {
@@ -66,7 +72,7 @@ export const issueAuthTokens = (
       role: payload.role,
       stationId: payload.stationId,
       iat: issuedAt,
-      exp: issuedAt + ACCESS_TOKEN_EXPIRES_IN_SECONDS,
+      exp: issuedAt + accessTokenExpiresInSeconds,
     },
     config.jwtAccessTokenSecret
   );
@@ -74,10 +80,9 @@ export const issueAuthTokens = (
   const refreshToken = signJwt(
     {
       sub: payload.userId,
-      role: payload.role,
       typ: "refresh",
       iat: issuedAt,
-      exp: issuedAt + REFRESH_TOKEN_EXPIRES_IN_SECONDS,
+      exp: issuedAt + refreshTokenExpiresInSeconds,
     },
     config.jwtRefreshTokenSecret
   );
@@ -86,7 +91,7 @@ export const issueAuthTokens = (
     tokenType: "Bearer",
     accessToken,
     refreshToken,
-    accessTokenExpiresInSeconds: ACCESS_TOKEN_EXPIRES_IN_SECONDS,
-    refreshTokenExpiresInSeconds: REFRESH_TOKEN_EXPIRES_IN_SECONDS,
+    accessTokenExpiresInSeconds,
+    refreshTokenExpiresInSeconds,
   };
 };
