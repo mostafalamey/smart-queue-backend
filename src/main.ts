@@ -10,6 +10,7 @@ import {
   createRealtimeSocketServer,
   SocketIoQueueRealtimeBroadcaster,
 } from "./realtime";
+import { createAsyncJobsRuntime } from "./jobs";
 import { loadRuntimeEnv } from "./runtime/env";
 
 export interface RuntimeHandle {
@@ -29,6 +30,12 @@ export const bootstrap = async (): Promise<RuntimeHandle> => {
   const realtimeBroadcaster = new SocketIoQueueRealtimeBroadcaster(
     realtimeSocketServer
   );
+  const jobsRuntime = createAsyncJobsRuntime(
+    env.redisUrl,
+    env.asyncJobsWorkerConcurrency,
+    env.asyncJobsRetainCompletedJobs,
+    env.asyncJobsRetainFailedJobs
+  );
   const requestHandler = createApiRequestHandler(prismaClient, {
     jwtAccessTokenSecret: env.jwtAccessTokenSecret,
     jwtRefreshTokenSecret: env.jwtRefreshTokenSecret,
@@ -43,6 +50,8 @@ export const bootstrap = async (): Promise<RuntimeHandle> => {
   attachRealtimeSocketServer(realtimeSocketServer, app.getHttpServer());
 
   let prismaConnected = false;
+  let jobsStarted = false;
+  let jobsReady = false;
   let appListening = false;
   let realtimeServerAttached = true;
   let stopPromise: Promise<void> | null = null;
@@ -80,6 +89,12 @@ export const bootstrap = async (): Promise<RuntimeHandle> => {
       realtimeServerAttached = false;
     }
 
+    if (jobsStarted) {
+      await jobsRuntime.stop().catch(() => undefined);
+      jobsStarted = false;
+      jobsReady = false;
+    }
+
     if (prismaConnected) {
       await prismaClient.$disconnect().catch(() => undefined);
     }
@@ -88,6 +103,9 @@ export const bootstrap = async (): Promise<RuntimeHandle> => {
   try {
     await prismaClient.$connect();
     prismaConnected = true;
+    jobsStarted = true;
+    await jobsRuntime.start();
+    jobsReady = true;
     await app.listen(env.port);
     appListening = true;
     console.log(`[runtime] Smart Queue backend listening on port ${env.port}`);
@@ -131,4 +149,5 @@ if (require.main === module) {
 
 export * from "./api";
 export * from "./auth";
+export * from "./jobs";
 export * from "./queue-engine";
