@@ -2,10 +2,32 @@ import { createServer, IncomingMessage, Server, ServerResponse } from "node:http
 import { PrismaClient } from "@prisma/client";
 import { createTellerApiHandlers } from "./teller";
 import { HttpResponse } from "./http";
+import {
+  CallNextRequest,
+  ChangePriorityRequest,
+  TicketActionRequest,
+  TransferTicketRequest,
+} from "./teller";
+import { ActorType, QueueActor } from "../queue-engine";
 
 type JsonRecord = Record<string, unknown>;
 
-type RouteHandler = (payload: JsonRecord) => Promise<HttpResponse>;
+type RouteHandler<TPayload> = (payload: TPayload) => Promise<HttpResponse>;
+
+class RequestValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RequestValidationError";
+  }
+}
+
+const actorTypes: ActorType[] = [
+  "USER",
+  "SYSTEM",
+  "PATIENT_WHATSAPP",
+  "PATIENT_PWA",
+  "KIOSK",
+];
 
 const json = (response: ServerResponse, status: number, body: unknown): void => {
   response.statusCode = status;
@@ -50,49 +72,148 @@ const invalidRequest = (response: ServerResponse, message: string): void => {
   });
 };
 
-const withPayload = async (
-  request: IncomingMessage,
-  response: ServerResponse,
-  handler: RouteHandler
-): Promise<void> => {
-  try {
-    const payload = await readJsonBody(request);
-    const result = await handler(payload);
-    json(response, result.status, result.body);
-  } catch (error: unknown) {
-    if (error instanceof SyntaxError) {
-      invalidRequest(response, "Invalid JSON payload");
-      return;
-    }
-
-    const message = error instanceof Error ? error.message : "Unexpected request error";
-    invalidRequest(response, message);
-  }
+const internalServerError = (response: ServerResponse): void => {
+  json(response, 500, {
+    code: "INTERNAL_ERROR",
+    message: "Unexpected server error",
+  });
 };
 
-const normalizeTransferPayload = (payload: JsonRecord): JsonRecord => {
-  const destination = asRecord(payload.destination);
-  if (!destination) {
-    throw new Error("destination is required");
+const requireString = (payload: JsonRecord, key: string): string => {
+  const value = payload[key];
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new RequestValidationError(`${key} must be a non-empty string`);
   }
 
-  const ticketDateRaw = destination.ticketDate;
-  if (typeof ticketDateRaw !== "string") {
-    throw new Error("destination.ticketDate must be an ISO date string");
+  return value;
+};
+
+const requireNumber = (payload: JsonRecord, key: string): number => {
+  const value = payload[key];
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    throw new RequestValidationError(`${key} must be a valid number`);
   }
 
-  const ticketDate = new Date(ticketDateRaw);
-  if (Number.isNaN(ticketDate.getTime())) {
-    throw new Error("destination.ticketDate must be a valid ISO date string");
+  return value;
+};
+
+const parseActor = (payload: JsonRecord): QueueActor => {
+  const actorPayload = asRecord(payload.actor);
+  if (!actorPayload) {
+    throw new RequestValidationError("actor is required");
+  }
+
+  const actorType = requireString(actorPayload, "actorType");
+  if (!actorTypes.includes(actorType as ActorType)) {
+    throw new RequestValidationError(
+      `actor.actorType must be one of: ${actorTypes.join(", ")}`
+    );
+  }
+
+  const actorUserIdValue = actorPayload.actorUserId;
+  if (
+    actorUserIdValue !== undefined &&
+    (typeof actorUserIdValue !== "string" || actorUserIdValue.trim().length === 0)
+  ) {
+    throw new RequestValidationError(
+      "actor.actorUserId must be a non-empty string when provided"
+    );
+  }
+
+  const stationIdValue = actorPayload.stationId;
+  if (
+    stationIdValue !== undefined &&
+    (typeof stationIdValue !== "string" || stationIdValue.trim().length === 0)
+  ) {
+    throw new RequestValidationError(
+      "actor.stationId must be a non-empty string when provided"
+    );
   }
 
   return {
-    ...payload,
+    actorType: actorType as ActorType,
+    actorUserId:
+      typeof actorUserIdValue === "string" ? actorUserIdValue : undefined,
+    stationId: typeof stationIdValue === "string" ? stationIdValue : undefined,
+  };
+};
+
+const parseCallNextRequest = (payload: JsonRecord): CallNextRequest => {
+  return {
+    serviceId: requireString(payload, "serviceId"),
+    stationId: requireString(payload, "stationId"),
+    actor: parseActor(payload),
+  };
+};
+
+const parseTicketActionRequest = (payload: JsonRecord): TicketActionRequest => {
+  return {
+    ticketId: requireString(payload, "ticketId"),
+    actor: parseActor(payload),
+  };
+};
+
+const parseTransferTicketRequest = (
+  payload: JsonRecord
+): TransferTicketRequest => {
+  const destinationPayload = asRecord(payload.destination);
+  if (!destinationPayload) {
+    throw new RequestValidationError("destination is required");
+  }
+
+  const ticketDateRaw = requireString(destinationPayload, "ticketDate");
+  const ticketDate = new Date(ticketDateRaw);
+  if (Number.isNaN(ticketDate.getTime())) {
+    throw new RequestValidationError(
+      "destination.ticketDate must be a valid ISO date string"
+    );
+  }
+
+  return {
+    ticketId: requireString(payload, "ticketId"),
+    actor: parseActor(payload),
     destination: {
-      ...destination,
+      departmentId: requireString(destinationPayload, "departmentId"),
+      serviceId: requireString(destinationPayload, "serviceId"),
       ticketDate,
     },
   };
+};
+
+const parseChangePriorityRequest = (
+  payload: JsonRecord
+): ChangePriorityRequest => {
+  const priorityWeight = requireNumber(payload, "priorityWeight");
+
+  return {
+    ticketId: requireString(payload, "ticketId"),
+    actor: parseActor(payload),
+    priorityCategoryId: requireString(payload, "priorityCategoryId"),
+    priorityWeight,
+  };
+};
+
+const withPayload = async <TPayload>(
+  request: IncomingMessage,
+  response: ServerResponse,
+  parse: (payload: JsonRecord) => TPayload,
+  handler: RouteHandler<TPayload>
+): Promise<void> => {
+  try {
+    const payload = await readJsonBody(request);
+    const parsedPayload = parse(payload);
+    const result = await handler(parsedPayload);
+    json(response, result.status, result.body);
+  } catch (error: unknown) {
+    if (error instanceof SyntaxError || error instanceof RequestValidationError) {
+      const message =
+        error instanceof SyntaxError ? "Invalid JSON payload" : error.message;
+      invalidRequest(response, message);
+      return;
+    }
+
+    internalServerError(response);
+  }
 };
 
 export const createApiServer = (prismaClient: PrismaClient): Server => {
@@ -110,50 +231,53 @@ export const createApiServer = (prismaClient: PrismaClient): Server => {
     }
 
     if (method === "POST" && path === "/teller/call-next") {
-      await withPayload(request, response, (payload) =>
-        tellerHandlers.callNext(payload as never)
+      await withPayload(request, response, parseCallNextRequest, (payload) =>
+        tellerHandlers.callNext(payload)
       );
       return;
     }
 
     if (method === "POST" && path === "/teller/recall") {
-      await withPayload(request, response, (payload) =>
-        tellerHandlers.recall(payload as never)
+      await withPayload(request, response, parseTicketActionRequest, (payload) =>
+        tellerHandlers.recall(payload)
       );
       return;
     }
 
     if (method === "POST" && path === "/teller/start-serving") {
-      await withPayload(request, response, (payload) =>
-        tellerHandlers.startServing(payload as never)
+      await withPayload(request, response, parseTicketActionRequest, (payload) =>
+        tellerHandlers.startServing(payload)
       );
       return;
     }
 
     if (method === "POST" && path === "/teller/skip-no-show") {
-      await withPayload(request, response, (payload) =>
-        tellerHandlers.skipNoShow(payload as never)
+      await withPayload(request, response, parseTicketActionRequest, (payload) =>
+        tellerHandlers.skipNoShow(payload)
       );
       return;
     }
 
     if (method === "POST" && path === "/teller/complete") {
-      await withPayload(request, response, (payload) =>
-        tellerHandlers.complete(payload as never)
+      await withPayload(request, response, parseTicketActionRequest, (payload) =>
+        tellerHandlers.complete(payload)
       );
       return;
     }
 
     if (method === "POST" && path === "/teller/transfer") {
-      await withPayload(request, response, async (payload) =>
-        tellerHandlers.transfer(normalizeTransferPayload(payload) as never)
+      await withPayload(
+        request,
+        response,
+        parseTransferTicketRequest,
+        async (payload) => tellerHandlers.transfer(payload)
       );
       return;
     }
 
     if (method === "POST" && path === "/teller/change-priority") {
-      await withPayload(request, response, (payload) =>
-        tellerHandlers.changePriority(payload as never)
+      await withPayload(request, response, parseChangePriorityRequest, (payload) =>
+        tellerHandlers.changePriority(payload)
       );
       return;
     }

@@ -11,8 +11,43 @@ const listen = (
   server: { listen: (port: number, callback?: () => void) => void },
   port: number
 ): Promise<void> => {
-  return new Promise((resolve) => {
-    server.listen(port, () => resolve());
+  return new Promise((resolve, reject) => {
+    const emitter = server as unknown as {
+      once?: (event: string, handler: (...args: unknown[]) => void) => void;
+      removeListener?: (
+        event: string,
+        handler: (...args: unknown[]) => void
+      ) => void;
+    };
+
+    const onError = (error: unknown): void => {
+      if (typeof emitter.removeListener === "function") {
+        emitter.removeListener("listening", onListening);
+      }
+      reject(error);
+    };
+
+    const onListening = (): void => {
+      if (typeof emitter.removeListener === "function") {
+        emitter.removeListener("error", onError);
+      }
+      resolve();
+    };
+
+    if (typeof emitter.once === "function") {
+      emitter.once("error", onError);
+      emitter.once("listening", onListening);
+    }
+
+    try {
+      server.listen(port);
+    } catch (error: unknown) {
+      if (typeof emitter.removeListener === "function") {
+        emitter.removeListener("error", onError);
+        emitter.removeListener("listening", onListening);
+      }
+      reject(error);
+    }
   });
 };
 
@@ -28,14 +63,28 @@ export const bootstrap = async (): Promise<RuntimeHandle> => {
   const env = loadRuntimeEnv();
 
   const prismaClient = new PrismaClient();
-  await prismaClient.$connect();
-
   const apiServer = createApiServer(prismaClient);
-  await listen(apiServer, env.port);
+  let prismaConnected = false;
+
+  const shutdownResources = async (): Promise<void> => {
+    await close(apiServer).catch(() => undefined);
+
+    if (prismaConnected) {
+      await prismaClient.$disconnect().catch(() => undefined);
+    }
+  };
+
+  try {
+    await prismaClient.$connect();
+    prismaConnected = true;
+    await listen(apiServer, env.port);
+  } catch (error: unknown) {
+    await shutdownResources();
+    throw error;
+  }
 
   const stop = async (): Promise<void> => {
-    await close(apiServer);
-    await prismaClient.$disconnect();
+    await shutdownResources();
   };
 
   const onSignal = (): void => {
