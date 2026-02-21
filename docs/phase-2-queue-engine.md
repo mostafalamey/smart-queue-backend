@@ -34,7 +34,6 @@ Branch: `feature/queue-engine-core`
 - `getTicketForUpdate` now uses SQL row-level lock (`FOR UPDATE`) inside transactions.
 - Queue engine service factory added: `src/queue-engine/factory.ts`
 - Framework-agnostic teller API handlers added: `src/api/teller/handlers.ts`
-
-## Temporary Compatibility Note
-- The queue engine domain includes `noShowAt`, and schema includes `Ticket.noShowAt`.
-- Repository persistence for `noShowAt` is pending Prisma Client regeneration/migration alignment in this repo environment.
+- Repository ticket updates now persist `noShowAt` for `NO_SHOW` transitions.
+- Focused selector and transition tests added under `src/queue-engine/__tests__/*`.
+- Single-command runner added: `./scripts/run-queue-engine-tests.ps1`.
