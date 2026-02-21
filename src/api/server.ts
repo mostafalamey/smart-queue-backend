@@ -9,6 +9,8 @@ import { QueueActor } from "../queue-engine";
 import {
   AuthenticatedPrincipal,
   AuthTokenError,
+  LoginError,
+  loginWithPassword,
   verifyAccessToken,
 } from "../auth";
 
@@ -37,6 +39,13 @@ interface ParsedTransferPayload extends ParsedTicketActionPayload {
 interface ParsedChangePriorityPayload extends ParsedTicketActionPayload {
   priorityCategoryId: string;
   priorityWeight: number;
+}
+
+interface ParsedLoginPayload {
+  email: string;
+  password: string;
+  deviceId?: string;
+  stationId?: string;
 }
 
 class RequestValidationError extends Error {
@@ -210,9 +219,7 @@ const getAuthenticatedPrincipal = (
 
   const bearerPrefix = "Bearer ";
   if (!authorizationHeader.startsWith(bearerPrefix)) {
-    throw new UnauthorizedError(
-      "Authorization header must use Bearer token"
-    );
+    throw new UnauthorizedError("Authorization header must use Bearer token");
   }
 
   const token = authorizationHeader.slice(bearerPrefix.length).trim();
@@ -286,6 +293,25 @@ const requireNumber = (payload: JsonRecord, key: string): number => {
   return value;
 };
 
+const optionalString = (payload: JsonRecord, key: string): string | undefined => {
+  const value = payload[key];
+
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (typeof value !== "string") {
+    throw new RequestValidationError(`${key} must be a string when provided`);
+  }
+
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    throw new RequestValidationError(`${key} must not be an empty string`);
+  }
+
+  return trimmed;
+};
+
 const parseCallNextPayload = (payload: JsonRecord): ParsedCallNextPayload => {
   return {
     serviceId: requireString(payload, "serviceId"),
@@ -336,6 +362,15 @@ const parseChangePriorityPayload = (
   };
 };
 
+const parseLoginPayload = (payload: JsonRecord): ParsedLoginPayload => {
+  return {
+    email: requireString(payload, "email"),
+    password: requireString(payload, "password"),
+    deviceId: optionalString(payload, "deviceId"),
+    stationId: optionalString(payload, "stationId"),
+  };
+};
+
 const withPayload = async <TPayload>(
   request: IncomingMessage,
   response: ServerResponse,
@@ -373,6 +408,14 @@ const withPayload = async <TPayload>(
       return;
     }
 
+    if (error instanceof LoginError) {
+      json(response, error.status, {
+        code: error.code,
+        message: error.message,
+      });
+      return;
+    }
+
     internalServerError(response);
   }
 };
@@ -392,6 +435,7 @@ const withAuthorizedTellerPayload = async <TPayload>(
 
 export interface ApiSecurityConfig {
   jwtAccessTokenSecret: string;
+  jwtRefreshTokenSecret: string;
 }
 
 export const createApiServer = (
@@ -411,6 +455,21 @@ export const createApiServer = (
       return;
     }
 
+    if (method === "POST" && path === "/auth/login") {
+      await withPayload(request, response, parseLoginPayload, async (payload) => {
+        const result = await loginWithPassword(prismaClient, payload, {
+          jwtAccessTokenSecret: securityConfig.jwtAccessTokenSecret,
+          jwtRefreshTokenSecret: securityConfig.jwtRefreshTokenSecret,
+        });
+
+        return {
+          status: 200,
+          body: result,
+        };
+      });
+      return;
+    }
+
     if (method === "POST" && path === "/teller/call-next") {
       await withAuthorizedTellerPayload(
         request,
@@ -418,12 +477,12 @@ export const createApiServer = (
         parseCallNextPayload,
         securityConfig.jwtAccessTokenSecret,
         (payload, actor) => {
-        return tellerHandlers.callNext({
-          serviceId: payload.serviceId,
-          stationId: requireStationId(actor),
-          actor,
-        });
-      }
+          return tellerHandlers.callNext({
+            serviceId: payload.serviceId,
+            stationId: requireStationId(actor),
+            actor,
+          });
+        }
       );
       return;
     }
@@ -435,11 +494,11 @@ export const createApiServer = (
         parseTicketActionPayload,
         securityConfig.jwtAccessTokenSecret,
         (payload, actor) => {
-        return tellerHandlers.recall({
-          ticketId: payload.ticketId,
-          actor,
-        });
-      }
+          return tellerHandlers.recall({
+            ticketId: payload.ticketId,
+            actor,
+          });
+        }
       );
       return;
     }
@@ -451,11 +510,11 @@ export const createApiServer = (
         parseTicketActionPayload,
         securityConfig.jwtAccessTokenSecret,
         (payload, actor) => {
-        return tellerHandlers.startServing({
-          ticketId: payload.ticketId,
-          actor,
-        });
-      }
+          return tellerHandlers.startServing({
+            ticketId: payload.ticketId,
+            actor,
+          });
+        }
       );
       return;
     }
@@ -467,11 +526,11 @@ export const createApiServer = (
         parseTicketActionPayload,
         securityConfig.jwtAccessTokenSecret,
         (payload, actor) => {
-        return tellerHandlers.skipNoShow({
-          ticketId: payload.ticketId,
-          actor,
-        });
-      }
+          return tellerHandlers.skipNoShow({
+            ticketId: payload.ticketId,
+            actor,
+          });
+        }
       );
       return;
     }
@@ -483,11 +542,11 @@ export const createApiServer = (
         parseTicketActionPayload,
         securityConfig.jwtAccessTokenSecret,
         (payload, actor) => {
-        return tellerHandlers.complete({
-          ticketId: payload.ticketId,
-          actor,
-        });
-      }
+          return tellerHandlers.complete({
+            ticketId: payload.ticketId,
+            actor,
+          });
+        }
       );
       return;
     }

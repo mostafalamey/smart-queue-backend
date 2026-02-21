@@ -67,6 +67,7 @@ export const bootstrap = async (): Promise<RuntimeHandle> => {
   const prismaClient = new PrismaClient();
   const apiServer = createApiServer(prismaClient, {
     jwtAccessTokenSecret: env.jwtAccessTokenSecret,
+    jwtRefreshTokenSecret: env.jwtRefreshTokenSecret,
   });
   let prismaConnected = false;
   let stopPromise: Promise<void> | null = null;
