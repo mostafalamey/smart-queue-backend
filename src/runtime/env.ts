@@ -7,6 +7,7 @@ export interface RuntimeEnv {
   jwtRefreshTokenSecret: string;
   jwtAccessTokenExpiresInSeconds: number;
   jwtRefreshTokenExpiresInSeconds: number;
+  realtimeCorsAllowedOrigins: "*" | string[];
 }
 
 const DEFAULT_ACCESS_TOKEN_EXPIRES_IN_SECONDS = 15 * 60;
@@ -58,8 +59,48 @@ const parsePositiveIntegerWithDefault = (
   return parsed;
 };
 
+const parseRealtimeCorsAllowedOrigins = (
+  rawValue: string | undefined,
+  nodeEnv: string
+): "*" | string[] => {
+  if (!rawValue || rawValue.trim().length === 0) {
+    if (nodeEnv === "production") {
+      throw new Error(
+        "REALTIME_CORS_ALLOWED_ORIGINS is required in production"
+      );
+    }
+
+    return "*";
+  }
+
+  const normalized = rawValue.trim();
+  if (normalized === "*") {
+    if (nodeEnv === "production") {
+      throw new Error(
+        "REALTIME_CORS_ALLOWED_ORIGINS cannot be '*' in production"
+      );
+    }
+
+    return "*";
+  }
+
+  const origins = normalized
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter((origin) => origin.length > 0);
+
+  if (origins.length === 0) {
+    throw new Error(
+      "REALTIME_CORS_ALLOWED_ORIGINS must be '*' or a comma-separated list of origins"
+    );
+  }
+
+  return origins;
+};
+
 export const loadRuntimeEnv = (): RuntimeEnv => {
   const env = process.env as Record<string, string | undefined>;
+  const nodeEnv = env.NODE_ENV?.trim().toLowerCase() ?? "development";
 
   return {
     port: parsePort(env.PORT),
@@ -81,6 +122,10 @@ export const loadRuntimeEnv = (): RuntimeEnv => {
       env.JWT_REFRESH_TOKEN_EXPIRES_IN_SECONDS,
       "JWT_REFRESH_TOKEN_EXPIRES_IN_SECONDS",
       DEFAULT_REFRESH_TOKEN_EXPIRES_IN_SECONDS
+    ),
+    realtimeCorsAllowedOrigins: parseRealtimeCorsAllowedOrigins(
+      env.REALTIME_CORS_ALLOWED_ORIGINS,
+      nodeEnv
     ),
   };
 };
