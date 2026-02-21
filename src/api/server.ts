@@ -1,20 +1,22 @@
+/// <reference path="../types/node-shim.d.ts" />
+/// <reference path="../types/crypto-shim.d.ts" />
+
 import { createServer, IncomingMessage, Server, ServerResponse } from "node:http";
 import { AppRole, PrismaClient } from "@prisma/client";
 import { createTellerApiHandlers } from "./teller";
 import { HttpResponse } from "./http";
 import { QueueActor } from "../queue-engine";
+import {
+  AuthenticatedPrincipal,
+  AuthTokenError,
+  verifyAccessToken,
+} from "../auth";
 
 type JsonRecord = Record<string, unknown>;
 
 type RouteHandler<TPayload> = (payload: TPayload) => Promise<HttpResponse>;
 
 const MAX_JSON_BODY_BYTES = 1024 * 1024;
-
-interface AuthenticatedPrincipal {
-  userId: string;
-  role: AppRole;
-  stationId?: string;
-}
 
 interface ParsedCallNextPayload {
   serviceId: string;
@@ -198,31 +200,54 @@ const isAllowedTellerRole = (role: AppRole): boolean => {
 };
 
 const getAuthenticatedPrincipal = (
-  request: IncomingMessage
+  request: IncomingMessage,
+  jwtAccessTokenSecret: string
 ): AuthenticatedPrincipal => {
-  const userId = getHeader(request, "x-user-id");
-  if (!userId || userId.trim().length === 0) {
-    throw new UnauthorizedError("Missing authenticated user id");
+  const authorizationHeader = getHeader(request, "authorization");
+  if (!authorizationHeader) {
+    throw new UnauthorizedError("Missing Authorization header");
   }
 
-  const role = parseRole(getHeader(request, "x-user-role"));
-  if (!role) {
-    throw new ForbiddenError(
-      "Missing or invalid user role (expected ADMIN, IT, MANAGER, or STAFF)"
+  const bearerPrefix = "Bearer ";
+  if (!authorizationHeader.startsWith(bearerPrefix)) {
+    throw new UnauthorizedError(
+      "Authorization header must use Bearer token"
     );
   }
 
-  const stationId = getHeader(request, "x-station-id");
+  const token = authorizationHeader.slice(bearerPrefix.length).trim();
+  if (!token) {
+    throw new UnauthorizedError("Bearer token is required");
+  }
+
+  let claims;
+  try {
+    claims = verifyAccessToken(token, jwtAccessTokenSecret);
+  } catch (error: unknown) {
+    if (error instanceof AuthTokenError) {
+      throw new UnauthorizedError(error.message);
+    }
+
+    throw error;
+  }
+
+  const role = parseRole(claims.role);
+  if (!role) {
+    throw new ForbiddenError("Token role is not recognized by server RBAC");
+  }
 
   return {
-    userId,
+    userId: claims.sub,
     role,
-    stationId: stationId && stationId.trim().length > 0 ? stationId : undefined,
+    stationId: claims.stationId,
   };
 };
 
-const getAuthorizedTellerActor = (request: IncomingMessage): QueueActor => {
-  const principal = getAuthenticatedPrincipal(request);
+const getAuthorizedTellerActor = (
+  request: IncomingMessage,
+  jwtAccessTokenSecret: string
+): QueueActor => {
+  const principal = getAuthenticatedPrincipal(request, jwtAccessTokenSecret);
 
   if (!isAllowedTellerRole(principal.role)) {
     throw new ForbiddenError("Authenticated role is not allowed for teller actions");
@@ -338,10 +363,13 @@ const withPayload = async <TPayload>(
       return;
     }
 
-    if (error instanceof SyntaxError || error instanceof RequestValidationError) {
-      const message =
-        error instanceof SyntaxError ? "Invalid JSON payload" : error.message;
-      invalidRequest(response, message);
+    if (error instanceof SyntaxError) {
+      invalidRequest(response, "Invalid JSON payload");
+      return;
+    }
+
+    if (error instanceof RequestValidationError) {
+      invalidRequest(response, error.message);
       return;
     }
 
@@ -349,7 +377,14 @@ const withPayload = async <TPayload>(
   }
 };
 
-export const createApiServer = (prismaClient: PrismaClient): Server => {
+export interface ApiSecurityConfig {
+  jwtAccessTokenSecret: string;
+}
+
+export const createApiServer = (
+  prismaClient: PrismaClient,
+  securityConfig: ApiSecurityConfig
+): Server => {
   const tellerHandlers = createTellerApiHandlers(prismaClient);
 
   return createServer(async (request, response) => {
@@ -365,7 +400,10 @@ export const createApiServer = (prismaClient: PrismaClient): Server => {
 
     if (method === "POST" && path === "/teller/call-next") {
       await withPayload(request, response, parseCallNextPayload, (payload) => {
-        const actor = getAuthorizedTellerActor(request);
+        const actor = getAuthorizedTellerActor(
+          request,
+          securityConfig.jwtAccessTokenSecret
+        );
 
         return tellerHandlers.callNext({
           serviceId: payload.serviceId,
@@ -379,7 +417,10 @@ export const createApiServer = (prismaClient: PrismaClient): Server => {
 
     if (method === "POST" && path === "/teller/recall") {
       await withPayload(request, response, parseTicketActionPayload, (payload) => {
-        const actor = getAuthorizedTellerActor(request);
+        const actor = getAuthorizedTellerActor(
+          request,
+          securityConfig.jwtAccessTokenSecret
+        );
 
         return tellerHandlers.recall({
           ticketId: payload.ticketId,
@@ -392,7 +433,10 @@ export const createApiServer = (prismaClient: PrismaClient): Server => {
 
     if (method === "POST" && path === "/teller/start-serving") {
       await withPayload(request, response, parseTicketActionPayload, (payload) => {
-        const actor = getAuthorizedTellerActor(request);
+        const actor = getAuthorizedTellerActor(
+          request,
+          securityConfig.jwtAccessTokenSecret
+        );
 
         return tellerHandlers.startServing({
           ticketId: payload.ticketId,
@@ -405,7 +449,10 @@ export const createApiServer = (prismaClient: PrismaClient): Server => {
 
     if (method === "POST" && path === "/teller/skip-no-show") {
       await withPayload(request, response, parseTicketActionPayload, (payload) => {
-        const actor = getAuthorizedTellerActor(request);
+        const actor = getAuthorizedTellerActor(
+          request,
+          securityConfig.jwtAccessTokenSecret
+        );
 
         return tellerHandlers.skipNoShow({
           ticketId: payload.ticketId,
@@ -418,7 +465,10 @@ export const createApiServer = (prismaClient: PrismaClient): Server => {
 
     if (method === "POST" && path === "/teller/complete") {
       await withPayload(request, response, parseTicketActionPayload, (payload) => {
-        const actor = getAuthorizedTellerActor(request);
+        const actor = getAuthorizedTellerActor(
+          request,
+          securityConfig.jwtAccessTokenSecret
+        );
 
         return tellerHandlers.complete({
           ticketId: payload.ticketId,
@@ -435,7 +485,10 @@ export const createApiServer = (prismaClient: PrismaClient): Server => {
         response,
         parseTransferPayload,
         async (payload) => {
-          const actor = getAuthorizedTellerActor(request);
+          const actor = getAuthorizedTellerActor(
+            request,
+            securityConfig.jwtAccessTokenSecret
+          );
 
           return tellerHandlers.transfer({
             ticketId: payload.ticketId,
@@ -453,7 +506,10 @@ export const createApiServer = (prismaClient: PrismaClient): Server => {
         response,
         parseChangePriorityPayload,
         (payload) => {
-          const actor = getAuthorizedTellerActor(request);
+          const actor = getAuthorizedTellerActor(
+            request,
+            securityConfig.jwtAccessTokenSecret
+          );
 
           return tellerHandlers.changePriority({
             ticketId: payload.ticketId,

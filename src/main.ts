@@ -1,4 +1,6 @@
-﻿import { PrismaClient } from "@prisma/client";
+﻿/// <reference path="./types/node-shim.d.ts" />
+
+import { PrismaClient } from "@prisma/client";
 import { createApiServer } from "./api";
 import { loadRuntimeEnv } from "./runtime/env";
 
@@ -63,7 +65,9 @@ export const bootstrap = async (): Promise<RuntimeHandle> => {
   const env = loadRuntimeEnv();
 
   const prismaClient = new PrismaClient();
-  const apiServer = createApiServer(prismaClient);
+  const apiServer = createApiServer(prismaClient, {
+    jwtAccessTokenSecret: env.jwtAccessTokenSecret,
+  });
   let prismaConnected = false;
   let stopPromise: Promise<void> | null = null;
 
@@ -133,4 +137,5 @@ export const bootstrap = async (): Promise<RuntimeHandle> => {
 };
 
 export * from "./api";
+export * from "./auth";
 export * from "./queue-engine";
