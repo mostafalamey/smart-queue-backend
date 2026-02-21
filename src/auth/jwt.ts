@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { AppRole } from "@prisma/client";
-import { AccessTokenClaims, AuthTokenError } from "./types";
+import { AccessTokenClaims, AuthTokenError, RefreshTokenClaims } from "./types";
 
 interface JwtHeader {
   alg?: string;
@@ -83,10 +83,46 @@ const validateClaims = (payload: Record<string, unknown>): AccessTokenClaims => 
   };
 };
 
-export const verifyAccessToken = (
+const validateRefreshClaims = (
+  payload: Record<string, unknown>
+): RefreshTokenClaims => {
+  const sub = payload.sub;
+  if (typeof sub !== "string" || sub.trim().length === 0) {
+    throw new AuthTokenError("Token subject claim is invalid");
+  }
+
+  const typ = payload.typ;
+  if (typ !== "refresh") {
+    throw new AuthTokenError("Token type must be refresh");
+  }
+
+  const expClaim = payload.exp;
+  if (expClaim !== undefined && typeof expClaim !== "number") {
+    throw new AuthTokenError("Token exp claim is invalid");
+  }
+
+  const iatClaim = payload.iat;
+  if (iatClaim !== undefined && typeof iatClaim !== "number") {
+    throw new AuthTokenError("Token iat claim is invalid");
+  }
+
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  if (typeof expClaim === "number" && expClaim <= nowSeconds) {
+    throw new AuthTokenError("Token has expired");
+  }
+
+  return {
+    sub,
+    typ: "refresh",
+    exp: typeof expClaim === "number" ? expClaim : undefined,
+    iat: typeof iatClaim === "number" ? iatClaim : undefined,
+  };
+};
+
+const verifySignedJwtPayload = (
   token: string,
   secret: string
-): AccessTokenClaims => {
+): Record<string, unknown> => {
   if (!token || token.trim().length === 0) {
     throw new AuthTokenError("Token is required");
   }
@@ -126,10 +162,24 @@ export const verifyAccessToken = (
     throw new AuthTokenError("Token signature is invalid");
   }
 
-  const payload = parseJson<Record<string, unknown>>(
+  return parseJson<Record<string, unknown>>(
     decodeBase64Url(payloadPart),
     "Token payload is invalid"
   );
+};
 
+export const verifyAccessToken = (
+  token: string,
+  secret: string
+): AccessTokenClaims => {
+  const payload = verifySignedJwtPayload(token, secret);
   return validateClaims(payload);
+};
+
+export const verifyRefreshToken = (
+  token: string,
+  secret: string
+): RefreshTokenClaims => {
+  const payload = verifySignedJwtPayload(token, secret);
+  return validateRefreshClaims(payload);
 };

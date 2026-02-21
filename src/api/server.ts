@@ -10,13 +10,14 @@ import {
   AuthenticatedPrincipal,
   AuthTokenError,
   LoginError,
+  RefreshError,
   loginWithPassword,
+  logoutWithRefreshTokenSkeleton,
+  refreshAuthTokens,
   verifyAccessToken,
 } from "../auth";
 
 type JsonRecord = Record<string, unknown>;
-
-type RouteHandler<TPayload> = (payload: TPayload) => Promise<HttpResponse>;
 
 const MAX_JSON_BODY_BYTES = 1024 * 1024;
 
@@ -46,6 +47,21 @@ interface ParsedLoginPayload {
   password: string;
   stationId?: string;
   requestedRole?: AppRole;
+}
+
+interface ParsedRefreshPayload {
+  refreshToken: string;
+  stationId?: string;
+  requestedRole?: AppRole;
+}
+
+interface ParsedLogoutPayload {
+  refreshToken: string;
+}
+
+interface AppRequestContext {
+  requestId: string;
+  principal?: AuthenticatedPrincipal;
 }
 
 class RequestValidationError extends Error {
@@ -82,6 +98,29 @@ class TooManyRequestsError extends Error {
     this.name = "TooManyRequestsError";
   }
 }
+
+const REQUEST_ID_HEADER = "x-request-id";
+
+const createRequestId = (): string => {
+  const timestamp = Date.now().toString(36);
+  const random = Math.random().toString(36).slice(2, 10);
+  return `${timestamp}-${random}`;
+};
+
+const getRequestId = (request: IncomingMessage): string => {
+  const providedRequestId = getHeader(request, REQUEST_ID_HEADER);
+  if (providedRequestId && providedRequestId.trim().length > 0) {
+    return providedRequestId.trim();
+  }
+
+  return createRequestId();
+};
+
+const createRequestContext = (request: IncomingMessage): AppRequestContext => {
+  return {
+    requestId: getRequestId(request),
+  };
+};
 
 const json = (response: ServerResponse, status: number, body: unknown): void => {
   response.statusCode = status;
@@ -345,10 +384,12 @@ const getAuthenticatedPrincipal = (
 };
 
 const getAuthorizedTellerActor = (
+  context: AppRequestContext,
   request: IncomingMessage,
   jwtAccessTokenSecret: string
 ): QueueActor => {
   const principal = getAuthenticatedPrincipal(request, jwtAccessTokenSecret);
+  context.principal = principal;
 
   if (!isAllowedTellerRole(principal.role)) {
     throw new ForbiddenError("Authenticated role is not allowed for teller actions");
@@ -479,16 +520,31 @@ const parseLoginPayload = (payload: JsonRecord): ParsedLoginPayload => {
   };
 };
 
+const parseRefreshPayload = (payload: JsonRecord): ParsedRefreshPayload => {
+  return {
+    refreshToken: requireString(payload, "refreshToken"),
+    stationId: optionalString(payload, "stationId"),
+    requestedRole: optionalRole(payload, "requestedRole"),
+  };
+};
+
+const parseLogoutPayload = (payload: JsonRecord): ParsedLogoutPayload => {
+  return {
+    refreshToken: requireString(payload, "refreshToken"),
+  };
+};
+
 const withPayload = async <TPayload>(
+  context: AppRequestContext,
   request: IncomingMessage,
   response: ServerResponse,
   parse: (payload: JsonRecord) => TPayload,
-  handler: RouteHandler<TPayload>
+  handler: (payload: TPayload, context: AppRequestContext) => Promise<HttpResponse>
 ): Promise<void> => {
   try {
     const payload = await readJsonBody(request);
     const parsedPayload = parse(payload);
-    const result = await handler(parsedPayload);
+    const result = await handler(parsedPayload, context);
     json(response, result.status, result.body);
   } catch (error: unknown) {
     if (error instanceof PayloadTooLargeError) {
@@ -529,19 +585,28 @@ const withPayload = async <TPayload>(
       return;
     }
 
+    if (error instanceof RefreshError) {
+      json(response, error.status, {
+        code: error.code,
+        message: error.message,
+      });
+      return;
+    }
+
     internalServerError(response);
   }
 };
 
 const withAuthorizedTellerPayload = async <TPayload>(
+  context: AppRequestContext,
   request: IncomingMessage,
   response: ServerResponse,
   parse: (payload: JsonRecord) => TPayload,
   jwtAccessTokenSecret: string,
   handler: (payload: TPayload, actor: QueueActor) => Promise<HttpResponse>
 ): Promise<void> => {
-  await withPayload(request, response, parse, (payload) => {
-    const actor = getAuthorizedTellerActor(request, jwtAccessTokenSecret);
+  await withPayload(context, request, response, parse, (payload) => {
+    const actor = getAuthorizedTellerActor(context, request, jwtAccessTokenSecret);
     return handler(payload, actor);
   });
 };
@@ -560,6 +625,9 @@ export const createApiServer = (
   const tellerHandlers = createTellerApiHandlers(prismaClient);
 
   return createServer(async (request, response) => {
+    const requestContext = createRequestContext(request);
+    response.setHeader(REQUEST_ID_HEADER, requestContext.requestId);
+
     const method = request.method ?? "";
     const path = request.url?.split("?")[0] ?? "";
 
@@ -571,7 +639,12 @@ export const createApiServer = (
     }
 
     if (method === "POST" && path === "/auth/login") {
-      await withPayload(request, response, parseLoginPayload, async (payload) => {
+      await withPayload(
+        requestContext,
+        request,
+        response,
+        parseLoginPayload,
+        async (payload) => {
         applyLoginRateLimit(request, payload.email);
 
         const result = await loginWithPassword(prismaClient, payload, {
@@ -587,12 +660,65 @@ export const createApiServer = (
           status: 200,
           body: result,
         };
-      });
+      }
+      );
+      return;
+    }
+
+    if (method === "POST" && path === "/auth/refresh") {
+      await withPayload(
+        requestContext,
+        request,
+        response,
+        parseRefreshPayload,
+        async (payload) => {
+          const result = await refreshAuthTokens(prismaClient, payload, {
+            jwtAccessTokenSecret: securityConfig.jwtAccessTokenSecret,
+            jwtRefreshTokenSecret: securityConfig.jwtRefreshTokenSecret,
+            accessTokenExpiresInSeconds:
+              securityConfig.jwtAccessTokenExpiresInSeconds,
+            refreshTokenExpiresInSeconds:
+              securityConfig.jwtRefreshTokenExpiresInSeconds,
+          });
+
+          return {
+            status: 200,
+            body: result,
+          };
+        }
+      );
+      return;
+    }
+
+    if (method === "POST" && path === "/auth/logout") {
+      await withPayload(
+        requestContext,
+        request,
+        response,
+        parseLogoutPayload,
+        async (payload) => {
+          logoutWithRefreshTokenSkeleton(
+            payload.refreshToken,
+            securityConfig.jwtRefreshTokenSecret
+          );
+
+          return {
+            status: 200,
+            body: {
+              success: true,
+              revoked: false,
+              message:
+                "Logout accepted. Refresh-token revocation persistence is not yet enabled.",
+            },
+          };
+        }
+      );
       return;
     }
 
     if (method === "POST" && path === "/teller/call-next") {
       await withAuthorizedTellerPayload(
+        requestContext,
         request,
         response,
         parseCallNextPayload,
@@ -610,6 +736,7 @@ export const createApiServer = (
 
     if (method === "POST" && path === "/teller/recall") {
       await withAuthorizedTellerPayload(
+        requestContext,
         request,
         response,
         parseTicketActionPayload,
@@ -626,6 +753,7 @@ export const createApiServer = (
 
     if (method === "POST" && path === "/teller/start-serving") {
       await withAuthorizedTellerPayload(
+        requestContext,
         request,
         response,
         parseTicketActionPayload,
@@ -642,6 +770,7 @@ export const createApiServer = (
 
     if (method === "POST" && path === "/teller/skip-no-show") {
       await withAuthorizedTellerPayload(
+        requestContext,
         request,
         response,
         parseTicketActionPayload,
@@ -658,6 +787,7 @@ export const createApiServer = (
 
     if (method === "POST" && path === "/teller/complete") {
       await withAuthorizedTellerPayload(
+        requestContext,
         request,
         response,
         parseTicketActionPayload,
@@ -674,6 +804,7 @@ export const createApiServer = (
 
     if (method === "POST" && path === "/teller/transfer") {
       await withAuthorizedTellerPayload(
+        requestContext,
         request,
         response,
         parseTransferPayload,
@@ -691,6 +822,7 @@ export const createApiServer = (
 
     if (method === "POST" && path === "/teller/change-priority") {
       await withAuthorizedTellerPayload(
+        requestContext,
         request,
         response,
         parseChangePriorityPayload,
