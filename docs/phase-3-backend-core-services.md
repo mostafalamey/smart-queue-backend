@@ -56,9 +56,10 @@ Deliver production-ready backend foundations for API runtime, auth, realtime, jo
 - Added async jobs baseline in `src/jobs/*` using Redis + BullMQ (`Queue`, `Worker`, `QueueEvents`) with startup/shutdown lifecycle wiring in `src/main.ts`.
 - Runtime env contract now requires `REDIS_URL` in `src/runtime/env.ts` and includes baseline Redis config in `.env.example`.
 - Added RBAC-protected admin configuration API stubs in `src/api/server.ts` for templates, mapping, retention, and service-counter reset surfaces.
+- Replaced admin configuration stubs with persistence-backed handlers in `src/api/server.ts` using `MessageTemplate`, `Device` mapping updates, and `AuditLog` persistence for retention and reset requests.
 
 ## Next Slice (Immediate)
-1. Implement persistence-backed admin configuration handlers behind the new stub routes.
+1. Begin Phase 4 kickoff planning (patient channels: kiosk + patient PWA).
 
 ## First Implementation Slice (Completed)
 1. Runtime bootstrap
