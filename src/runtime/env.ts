@@ -1,3 +1,5 @@
+import "dotenv/config";
+
 export interface RuntimeEnv {
   port: number;
   databaseUrl: string;

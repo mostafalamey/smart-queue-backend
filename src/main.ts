@@ -68,6 +68,7 @@ export const bootstrap = async (): Promise<RuntimeHandle> => {
     prismaConnected = true;
     await app.listen(env.port);
     appListening = true;
+    console.log(`[runtime] Smart Queue backend listening on port ${env.port}`);
   } catch (error: unknown) {
     await shutdownResources();
     throw error;
@@ -97,6 +98,14 @@ export const bootstrap = async (): Promise<RuntimeHandle> => {
     stop,
   };
 };
+
+if (require.main === module) {
+  void bootstrap().catch((error: unknown) => {
+    const message = error instanceof Error ? error.stack ?? error.message : String(error);
+    console.error("[runtime] Failed to start Smart Queue backend", message);
+    process.exit(1);
+  });
+}
 
 export * from "./api";
 export * from "./auth";
