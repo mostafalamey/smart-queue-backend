@@ -4,8 +4,8 @@
   "private": true,
   "description": "Smart Queue backend API service",
   "scripts": {
-    "dev": "jiti src/main.ts",
-    "build": "tsc -p tsconfig.json",
+    "dev": "jiti src/dev.ts",
+    "build": "tsc -p tsconfig.json && node -e \"console.log('Build completed successfully.')\"",
     "start": "node dist/main.js",
     "test": "npm run test:queue && npm run test:auth",
     "test:queue": "node ./scripts/run-jiti-tests.mjs src/queue-engine/__tests__/selector.test.ts src/queue-engine/__tests__/state-machine.test.ts",
@@ -19,6 +19,7 @@
     "@nestjs/platform-express": "^10.4.15",
     "@prisma/client": "^5.22.0",
     "argon2": "^0.41.1",
+    "dotenv": "^17.3.1",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1"
   },
