@@ -76,6 +76,10 @@ interface RealtimeEmitInput {
   fallbackServiceId?: string;
 }
 
+interface RouteGuardPolicy {
+  allowedRoles: ReadonlySet<AppRole>;
+}
+
 class RequestValidationError extends Error {
   constructor(message: string) {
     super(message);
@@ -344,14 +348,12 @@ const parseRole = (rawRole: string | undefined): AppRole | null => {
   return rawRole as AppRole;
 };
 
-const isAllowedTellerRole = (role: AppRole): boolean => {
-  return (
-    role === AppRole.ADMIN ||
-    role === AppRole.IT ||
-    role === AppRole.MANAGER ||
-    role === AppRole.STAFF
-  );
-};
+const TELLER_ROUTE_ALLOWED_ROLES = new Set<AppRole>([
+  AppRole.ADMIN,
+  AppRole.IT,
+  AppRole.MANAGER,
+  AppRole.STAFF,
+]);
 
 const getAuthenticatedPrincipal = (
   request: IncomingMessage,
@@ -395,23 +397,52 @@ const getAuthenticatedPrincipal = (
   };
 };
 
-const getAuthorizedTellerActor = (
+const assertRoleAllowedByPolicy = (
+  principal: AuthenticatedPrincipal,
+  policy: RouteGuardPolicy
+): void => {
+  if (!policy.allowedRoles.has(principal.role)) {
+    throw new ForbiddenError("Authenticated role is not allowed for this route");
+  }
+};
+
+const resolveAuthorizedPrincipalForRoute = (
   context: AppRequestContext,
   request: IncomingMessage,
-  jwtAccessTokenSecret: string
-): QueueActor => {
+  jwtAccessTokenSecret: string,
+  policy: RouteGuardPolicy
+): AuthenticatedPrincipal => {
   const principal = getAuthenticatedPrincipal(request, jwtAccessTokenSecret);
   context.principal = principal;
+  assertRoleAllowedByPolicy(principal, policy);
+  return principal;
+};
 
-  if (!isAllowedTellerRole(principal.role)) {
-    throw new ForbiddenError("Authenticated role is not allowed for teller actions");
-  }
-
+const mapPrincipalToQueueActor = (
+  principal: AuthenticatedPrincipal
+): QueueActor => {
   return {
     actorType: "USER",
     actorUserId: principal.userId,
     stationId: principal.stationId,
   };
+};
+
+const getAuthorizedTellerActor = (
+  context: AppRequestContext,
+  request: IncomingMessage,
+  jwtAccessTokenSecret: string
+): QueueActor => {
+  const principal = resolveAuthorizedPrincipalForRoute(
+    context,
+    request,
+    jwtAccessTokenSecret,
+    {
+      allowedRoles: TELLER_ROUTE_ALLOWED_ROLES,
+    }
+  );
+
+  return mapPrincipalToQueueActor(principal);
 };
 
 const requireStationId = (actor: QueueActor): string => {
@@ -661,6 +692,9 @@ export const __serverTestables = {
   extractRealtimeServiceId,
   extractRealtimeTicketId,
   shouldEmitNowServingUpdate,
+  assertRoleAllowedByPolicy,
+  mapPrincipalToQueueActor,
+  TELLER_ROUTE_ALLOWED_ROLES,
 };
 
 const withPayload = async <TPayload>(

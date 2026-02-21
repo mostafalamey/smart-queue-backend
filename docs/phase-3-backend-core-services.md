@@ -22,7 +22,7 @@ Deliver production-ready backend foundations for API runtime, auth, realtime, jo
 - [x] Align backend runtime entrypoint with NestJS module/controller bootstrap path.
 - [x] Align password hashing baseline to Argon2id (with legacy hash verification migration path).
 - [x] Add backend packaging baseline (`package.json`, lockfile, env template, compose file).
-- [ ] Add RBAC middleware/guard enforcement path for protected API routes.
+- [x] Add RBAC middleware/guard enforcement path for protected API routes.
 - [x] Add realtime broadcasting skeleton for queue and now-serving updates.
 - [ ] Add async jobs baseline (Redis + queue worker skeleton for retries/scheduled jobs).
 - [ ] Define admin configuration API surface stubs (resets/templates/mapping/retention).
@@ -52,6 +52,7 @@ Deliver production-ready backend foundations for API runtime, auth, realtime, jo
 - Added packaging/reproducibility baseline: `package.json`, `package-lock.json`, `.env.example`, `docker-compose.yml`.
 - Added Socket.IO realtime skeleton in `src/realtime/*` with server attachment during bootstrap and subscription rooms by service/station.
 - Teller mutation routes now emit baseline realtime events (`queue.updated`, `now-serving.updated`) after successful operations.
+- Added reusable route guard enforcement path in `src/api/server.ts` to authenticate principals and enforce role-based access policy before protected route execution.
 
 ## Next Slice (Immediate)
 1. Add async jobs baseline (Redis + queue worker skeleton for retries/scheduled jobs).
