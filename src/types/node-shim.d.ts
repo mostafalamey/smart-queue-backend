@@ -16,6 +16,11 @@ declare module "node:http" {
   export interface Server {
     listen(port: number, callback?: () => void): void;
     close(callback?: () => void): void;
+    addListener(event: string, listener: (...args: unknown[]) => void): this;
+    on(event: string, listener: (...args: unknown[]) => void): this;
+    once(event: string, listener: (...args: unknown[]) => void): this;
+    emit(event: string, ...args: unknown[]): boolean;
+    removeListener(event: string, listener: (...args: unknown[]) => void): this;
   }
 
   export function createServer(

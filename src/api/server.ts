@@ -565,11 +565,17 @@ const extractRealtimeServiceId = (
   fallbackServiceId?: string
 ): string | undefined => {
   const bodyRecord = asRecord(resultBody);
+  const destinationServiceId = getStringProperty(
+    bodyRecord?.destinationTicket,
+    "serviceId"
+  );
+  const directServiceId = getStringProperty(bodyRecord, "serviceId");
+  const sourceServiceId = getStringProperty(bodyRecord?.sourceTicket, "serviceId");
 
   return (
-    getStringProperty(resultBody, "serviceId") ??
-    getStringProperty(bodyRecord?.destinationTicket, "serviceId") ??
-    getStringProperty(bodyRecord?.sourceTicket, "serviceId") ??
+    destinationServiceId ??
+    directServiceId ??
+    sourceServiceId ??
     fallbackServiceId
   );
 };
@@ -585,6 +591,18 @@ const extractRealtimeTicketId = (resultBody: unknown): string | undefined => {
   );
 };
 
+const NOW_SERVING_MUTATION_OPERATIONS = new Set<string>([
+  "teller.call-next",
+  "teller.recall",
+  "teller.start-serving",
+  "teller.complete",
+  "teller.skip-no-show",
+  "teller.transfer",
+]);
+
+const shouldEmitNowServingUpdate = (operation: string): boolean =>
+  NOW_SERVING_MUTATION_OPERATIONS.has(operation);
+
 const emitRealtimeForSuccessfulTellerMutation = (
   broadcaster: QueueRealtimeBroadcaster,
   input: RealtimeEmitInput
@@ -593,17 +611,56 @@ const emitRealtimeForSuccessfulTellerMutation = (
     return;
   }
 
+  const responseBody = asRecord(input.result.body);
+  if (!responseBody) {
+    console.warn("[realtime] Skipping broadcast due to malformed successful response body", {
+      requestId: input.context.requestId,
+      operation: input.operation,
+      status: input.result.status,
+    });
+    return;
+  }
+
+  const ticketId = extractRealtimeTicketId(responseBody);
+  const serviceId = extractRealtimeServiceId(responseBody, input.fallbackServiceId);
+
+  if (!ticketId && !serviceId) {
+    console.warn("[realtime] Skipping broadcast due to missing realtime identifiers", {
+      requestId: input.context.requestId,
+      operation: input.operation,
+      status: input.result.status,
+    });
+    return;
+  }
+
   const event = {
     requestId: input.context.requestId,
     operation: input.operation,
-    ticketId: extractRealtimeTicketId(input.result.body),
-    serviceId: extractRealtimeServiceId(input.result.body, input.fallbackServiceId),
+    ticketId,
+    serviceId,
     stationId: input.actor.stationId,
     occurredAt: new Date().toISOString(),
   };
 
-  broadcaster.broadcastQueueUpdated(event);
-  broadcaster.broadcastNowServingUpdated(event);
+  try {
+    broadcaster.broadcastQueueUpdated(event);
+
+    if (shouldEmitNowServingUpdate(input.operation)) {
+      broadcaster.broadcastNowServingUpdated(event);
+    }
+  } catch (error: unknown) {
+    console.error("[realtime] Broadcast failed", {
+      requestId: input.context.requestId,
+      operation: input.operation,
+      error,
+    });
+  }
+};
+
+export const __serverTestables = {
+  extractRealtimeServiceId,
+  extractRealtimeTicketId,
+  shouldEmitNowServingUpdate,
 };
 
 const withPayload = async <TPayload>(

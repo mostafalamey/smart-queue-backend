@@ -21,7 +21,11 @@ export const bootstrap = async (): Promise<RuntimeHandle> => {
   const env = loadRuntimeEnv();
 
   const prismaClient = new PrismaClient();
-  const realtimeSocketServer = createRealtimeSocketServer();
+  const realtimeSocketServer = createRealtimeSocketServer(
+    prismaClient,
+    env.jwtAccessTokenSecret,
+    env.realtimeCorsAllowedOrigins
+  );
   const realtimeBroadcaster = new SocketIoQueueRealtimeBroadcaster(
     realtimeSocketServer
   );
@@ -40,6 +44,7 @@ export const bootstrap = async (): Promise<RuntimeHandle> => {
 
   let prismaConnected = false;
   let appListening = false;
+  let realtimeServerAttached = true;
   let stopPromise: Promise<void> | null = null;
 
   const processEmitter = process as typeof process & {
@@ -70,7 +75,10 @@ export const bootstrap = async (): Promise<RuntimeHandle> => {
       await app.close().catch(() => undefined);
     }
 
-    await realtimeSocketServer.close().catch(() => undefined);
+    if (realtimeServerAttached) {
+      await realtimeSocketServer.close().catch(() => undefined);
+      realtimeServerAttached = false;
+    }
 
     if (prismaConnected) {
       await prismaClient.$disconnect().catch(() => undefined);
