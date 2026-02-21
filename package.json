@@ -5,7 +5,7 @@
   "description": "Smart Queue backend API service",
   "scripts": {
     "dev": "jiti src/dev.ts",
-    "build": "tsc -p tsconfig.json && node -e \"console.log('Build completed successfully.')\"",
+    "build": "tsc -p tsconfig.json",
     "start": "node dist/main.js",
     "test": "npm run test:queue && npm run test:auth",
     "test:queue": "node ./scripts/run-jiti-tests.mjs src/queue-engine/__tests__/selector.test.ts src/queue-engine/__tests__/state-machine.test.ts",
