@@ -1,4 +1,5 @@
 import { Prisma, PrismaClient, TicketStatus } from "@prisma/client";
+import { QueueEngineError } from "./errors";
 import {
   QueueEngineRepository,
   TransferDestinationInput,
@@ -340,6 +341,10 @@ export class PrismaQueueEngineRepository implements QueueEngineRepository {
     destination: TransferDestinationInput;
   }): Promise<QueueTicket> {
     const client = this.getClient();
+    const generated = await this.generateTransferSequenceAndTicketNumber({
+      serviceId: args.destination.serviceId,
+      ticketDate: args.destination.ticketDate,
+    });
 
     const created = await client.ticket.create({
       data: {
@@ -347,8 +352,8 @@ export class PrismaQueueEngineRepository implements QueueEngineRepository {
         departmentId: args.destination.departmentId,
         serviceId: args.destination.serviceId,
         ticketDate: args.destination.ticketDate,
-        sequenceNumber: args.destination.sequenceNumber,
-        ticketNumber: args.destination.ticketNumber,
+        sequenceNumber: generated.sequenceNumber,
+        ticketNumber: generated.ticketNumber,
         phoneNumber: args.sourceTicket.phoneNumber,
         priorityCategoryId: args.sourceTicket.priorityCategoryId,
         status: "WAITING",
@@ -428,5 +433,47 @@ export class PrismaQueueEngineRepository implements QueueEngineRepository {
 
   private getClient(): PrismaClient | TransactionClient {
     return this.transactionClient ?? this.prisma;
+  }
+
+  private async generateTransferSequenceAndTicketNumber(args: {
+    serviceId: string;
+    ticketDate: Date;
+  }): Promise<{ sequenceNumber: number; ticketNumber: string }> {
+    const client = this.getClient();
+
+    const serviceRows = await client.$queryRaw<Array<{ ticketPrefix: string }>>`
+      SELECT "ticketPrefix"
+      FROM "Service"
+      WHERE "id" = ${args.serviceId}
+      FOR UPDATE
+    `;
+
+    if (serviceRows.length === 0) {
+      throw new QueueEngineError(
+        "Destination service not found",
+        "SERVICE_NOT_FOUND"
+      );
+    }
+
+    const service = serviceRows[0];
+
+    const sequenceRows = await client.$queryRaw<
+      Array<{ maxSequenceNumber: number | bigint | string | null }>
+    >`
+      SELECT COALESCE(MAX("sequenceNumber"), 0) AS "maxSequenceNumber"
+      FROM "Ticket"
+      WHERE "serviceId" = ${args.serviceId}
+        AND "ticketDate" = ${args.ticketDate}
+    `;
+
+    const maxSequenceRaw = sequenceRows[0]?.maxSequenceNumber ?? 0;
+    const maxSequence = Number(maxSequenceRaw);
+    const sequenceNumber = maxSequence + 1;
+    const ticketNumber = `${service.ticketPrefix}-${String(sequenceNumber).padStart(3, "0")}`;
+
+    return {
+      sequenceNumber,
+      ticketNumber,
+    };
   }
 }
