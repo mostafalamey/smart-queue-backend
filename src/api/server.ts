@@ -63,6 +63,25 @@ interface ParsedLogoutPayload {
   refreshToken: string;
 }
 
+interface ParsedAdminConfigTemplatePayload {
+  templateKey: string;
+  language: string;
+  content: string;
+}
+
+interface ParsedAdminConfigMappingPayload {
+  stationId: string;
+  deviceId: string;
+}
+
+interface ParsedAdminConfigRetentionPayload {
+  retentionDays: number;
+}
+
+interface ParsedAdminConfigResetPayload {
+  serviceId: string;
+}
+
 interface AppRequestContext {
   requestId: string;
   principal?: AuthenticatedPrincipal;
@@ -355,6 +374,16 @@ const TELLER_ROUTE_ALLOWED_ROLES = new Set<AppRole>([
   AppRole.STAFF,
 ]);
 
+const ADMIN_CONFIG_SETTINGS_ALLOWED_ROLES = new Set<AppRole>([
+  AppRole.ADMIN,
+  AppRole.IT,
+]);
+
+const ADMIN_CONFIG_RESETS_ALLOWED_ROLES = new Set<AppRole>([
+  AppRole.ADMIN,
+  AppRole.MANAGER,
+]);
+
 const getAuthenticatedPrincipal = (
   request: IncomingMessage,
   jwtAccessTokenSecret: string
@@ -577,6 +606,65 @@ const parseLogoutPayload = (payload: JsonRecord): ParsedLogoutPayload => {
   };
 };
 
+const parseAdminConfigTemplatePayload = (
+  payload: JsonRecord
+): ParsedAdminConfigTemplatePayload => {
+  return {
+    templateKey: requireString(payload, "templateKey"),
+    language: requireString(payload, "language"),
+    content: requireString(payload, "content"),
+  };
+};
+
+const parseAdminConfigMappingPayload = (
+  payload: JsonRecord
+): ParsedAdminConfigMappingPayload => {
+  return {
+    stationId: requireString(payload, "stationId"),
+    deviceId: requireString(payload, "deviceId"),
+  };
+};
+
+const parseAdminConfigRetentionPayload = (
+  payload: JsonRecord
+): ParsedAdminConfigRetentionPayload => {
+  const retentionDays = requireNumber(payload, "retentionDays");
+  if (!Number.isInteger(retentionDays) || retentionDays <= 0) {
+    throw new RequestValidationError("retentionDays must be a positive integer");
+  }
+
+  return {
+    retentionDays,
+  };
+};
+
+const parseAdminConfigResetPayload = (
+  payload: JsonRecord
+): ParsedAdminConfigResetPayload => {
+  return {
+    serviceId: requireString(payload, "serviceId"),
+  };
+};
+
+const createAdminConfigStubResponse = (
+  context: AppRequestContext,
+  principal: AuthenticatedPrincipal,
+  surface: string,
+  payloadSummary?: Record<string, unknown>
+): HttpResponse => {
+  return {
+    status: 200,
+    body: {
+      stub: true,
+      surface,
+      requestId: context.requestId,
+      authorizedRole: principal.role,
+      message: "Admin configuration API stub is available. Persistent implementation is pending.",
+      payloadSummary,
+    },
+  };
+};
+
 const getStringProperty = (
   value: unknown,
   key: string
@@ -774,6 +862,67 @@ const withAuthorizedTellerPayload = async <TPayload>(
   });
 };
 
+const withAuthorizedPayload = async <TPayload>(
+  context: AppRequestContext,
+  request: IncomingMessage,
+  response: ServerResponse,
+  parse: (payload: JsonRecord) => TPayload,
+  jwtAccessTokenSecret: string,
+  policy: RouteGuardPolicy,
+  handler: (
+    payload: TPayload,
+    principal: AuthenticatedPrincipal,
+    context: AppRequestContext
+  ) => Promise<HttpResponse>
+): Promise<void> => {
+  await withPayload(context, request, response, parse, (payload, innerContext) => {
+    const principal = resolveAuthorizedPrincipalForRoute(
+      innerContext,
+      request,
+      jwtAccessTokenSecret,
+      policy
+    );
+
+    return handler(payload, principal, innerContext);
+  });
+};
+
+const withAuthorizedNoPayload = async (
+  context: AppRequestContext,
+  request: IncomingMessage,
+  response: ServerResponse,
+  jwtAccessTokenSecret: string,
+  policy: RouteGuardPolicy,
+  handler: (
+    principal: AuthenticatedPrincipal,
+    context: AppRequestContext
+  ) => Promise<HttpResponse>
+): Promise<void> => {
+  try {
+    const principal = resolveAuthorizedPrincipalForRoute(
+      context,
+      request,
+      jwtAccessTokenSecret,
+      policy
+    );
+
+    const result = await handler(principal, context);
+    json(response, result.status, result.body);
+  } catch (error: unknown) {
+    if (error instanceof UnauthorizedError) {
+      unauthorized(response, error.message);
+      return;
+    }
+
+    if (error instanceof ForbiddenError) {
+      forbidden(response, error.message);
+      return;
+    }
+
+    internalServerError(response);
+  }
+};
+
 export interface ApiSecurityConfig {
   jwtAccessTokenSecret: string;
   jwtRefreshTokenSecret: string;
@@ -886,6 +1035,137 @@ export const createApiRequestHandler = (
                 "Logout accepted. Refresh-token revocation persistence is not yet enabled.",
             },
           };
+        }
+      );
+      return;
+    }
+
+    if (method === "GET" && path === "/admin/config/templates") {
+      await withAuthorizedNoPayload(
+        requestContext,
+        request,
+        response,
+        securityConfig.jwtAccessTokenSecret,
+        {
+          allowedRoles: ADMIN_CONFIG_SETTINGS_ALLOWED_ROLES,
+        },
+        async (principal, context) => {
+          return createAdminConfigStubResponse(context, principal, "templates.read");
+        }
+      );
+      return;
+    }
+
+    if (method === "POST" && path === "/admin/config/templates") {
+      await withAuthorizedPayload(
+        requestContext,
+        request,
+        response,
+        parseAdminConfigTemplatePayload,
+        securityConfig.jwtAccessTokenSecret,
+        {
+          allowedRoles: ADMIN_CONFIG_SETTINGS_ALLOWED_ROLES,
+        },
+        async (payload, principal, context) => {
+          return createAdminConfigStubResponse(context, principal, "templates.write", {
+            templateKey: payload.templateKey,
+            language: payload.language,
+          });
+        }
+      );
+      return;
+    }
+
+    if (method === "GET" && path === "/admin/config/mapping") {
+      await withAuthorizedNoPayload(
+        requestContext,
+        request,
+        response,
+        securityConfig.jwtAccessTokenSecret,
+        {
+          allowedRoles: ADMIN_CONFIG_SETTINGS_ALLOWED_ROLES,
+        },
+        async (principal, context) => {
+          return createAdminConfigStubResponse(context, principal, "mapping.read");
+        }
+      );
+      return;
+    }
+
+    if (method === "POST" && path === "/admin/config/mapping") {
+      await withAuthorizedPayload(
+        requestContext,
+        request,
+        response,
+        parseAdminConfigMappingPayload,
+        securityConfig.jwtAccessTokenSecret,
+        {
+          allowedRoles: ADMIN_CONFIG_SETTINGS_ALLOWED_ROLES,
+        },
+        async (payload, principal, context) => {
+          return createAdminConfigStubResponse(context, principal, "mapping.write", {
+            stationId: payload.stationId,
+            deviceId: payload.deviceId,
+          });
+        }
+      );
+      return;
+    }
+
+    if (method === "GET" && path === "/admin/config/retention") {
+      await withAuthorizedNoPayload(
+        requestContext,
+        request,
+        response,
+        securityConfig.jwtAccessTokenSecret,
+        {
+          allowedRoles: ADMIN_CONFIG_SETTINGS_ALLOWED_ROLES,
+        },
+        async (principal, context) => {
+          return createAdminConfigStubResponse(context, principal, "retention.read");
+        }
+      );
+      return;
+    }
+
+    if (method === "POST" && path === "/admin/config/retention") {
+      await withAuthorizedPayload(
+        requestContext,
+        request,
+        response,
+        parseAdminConfigRetentionPayload,
+        securityConfig.jwtAccessTokenSecret,
+        {
+          allowedRoles: ADMIN_CONFIG_SETTINGS_ALLOWED_ROLES,
+        },
+        async (payload, principal, context) => {
+          return createAdminConfigStubResponse(context, principal, "retention.write", {
+            retentionDays: payload.retentionDays,
+          });
+        }
+      );
+      return;
+    }
+
+    if (method === "POST" && path === "/admin/config/resets/service-counter") {
+      await withAuthorizedPayload(
+        requestContext,
+        request,
+        response,
+        parseAdminConfigResetPayload,
+        securityConfig.jwtAccessTokenSecret,
+        {
+          allowedRoles: ADMIN_CONFIG_RESETS_ALLOWED_ROLES,
+        },
+        async (payload, principal, context) => {
+          return createAdminConfigStubResponse(
+            context,
+            principal,
+            "resets.service-counter",
+            {
+              serviceId: payload.serviceId,
+            }
+          );
         }
       );
       return;
