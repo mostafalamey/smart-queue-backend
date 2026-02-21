@@ -935,12 +935,27 @@ const resolvePrincipalAccessScope = async (
     throw new ForbiddenError("Authenticated user is not available in persistence layer");
   }
 
-  const managerDepartmentId =
-    principal.role === AppRole.MANAGER
-      ? user.roleAssignments.find(
-          (assignment) => typeof assignment.departmentId === "string"
-        )?.departmentId ?? undefined
-      : undefined;
+  let managerDepartmentId: string | undefined;
+
+  if (principal.role === AppRole.MANAGER) {
+    if (user.roleAssignments.length !== 1) {
+      throw new ForbiddenError(
+        "Manager role assignment must be scoped to exactly one department"
+      );
+    }
+
+    const assignmentDepartmentId = user.roleAssignments[0]?.departmentId;
+    if (
+      typeof assignmentDepartmentId !== "string" ||
+      assignmentDepartmentId.trim().length === 0
+    ) {
+      throw new ForbiddenError(
+        "Manager role assignment must be scoped to exactly one department"
+      );
+    }
+
+    managerDepartmentId = assignmentDepartmentId;
+  }
 
   return {
     principal,
@@ -1148,51 +1163,55 @@ export const createApiRequestHandler = (
         },
         async (payload, principal, context) => {
           const scope = await resolvePrincipalAccessScope(prismaClient, principal);
-          const template = await prismaClient.messageTemplate.upsert({
-            where: {
-              hospitalId_channel_eventType_language: {
+          const template = await prismaClient.$transaction(async (tx) => {
+            const persistedTemplate = await tx.messageTemplate.upsert({
+              where: {
+                hospitalId_channel_eventType_language: {
+                  hospitalId: scope.hospitalId,
+                  channel: TemplateChannel.WHATSAPP,
+                  eventType: payload.templateKey,
+                  language: payload.language,
+                },
+              },
+              update: {
+                content: payload.content,
+                isActive: true,
+              },
+              create: {
                 hospitalId: scope.hospitalId,
                 channel: TemplateChannel.WHATSAPP,
                 eventType: payload.templateKey,
                 language: payload.language,
+                content: payload.content,
+                isActive: true,
               },
-            },
-            update: {
-              content: payload.content,
-              isActive: true,
-            },
-            create: {
-              hospitalId: scope.hospitalId,
-              channel: TemplateChannel.WHATSAPP,
-              eventType: payload.templateKey,
-              language: payload.language,
-              content: payload.content,
-              isActive: true,
-            },
-            select: {
-              id: true,
-              channel: true,
-              eventType: true,
-              language: true,
-              content: true,
-              isActive: true,
-              updatedAt: true,
-            },
-          });
+              select: {
+                id: true,
+                channel: true,
+                eventType: true,
+                language: true,
+                content: true,
+                isActive: true,
+                updatedAt: true,
+              },
+            });
 
-          await prismaClient.auditLog.create({
-            data: {
-              hospitalId: scope.hospitalId,
-              actorUserId: scope.principal.userId,
-              action: "MESSAGE_TEMPLATE_UPSERTED",
-              entityType: "MESSAGE_TEMPLATE",
-              entityId: template.id,
-              after: {
-                channel: template.channel,
-                eventType: template.eventType,
-                language: template.language,
+            await tx.auditLog.create({
+              data: {
+                hospitalId: scope.hospitalId,
+                actorUserId: scope.principal.userId,
+                action: "MESSAGE_TEMPLATE_UPSERTED",
+                entityType: "MESSAGE_TEMPLATE",
+                entityId: persistedTemplate.id,
+                after: {
+                  channel: persistedTemplate.channel,
+                  eventType: persistedTemplate.eventType,
+                  language: persistedTemplate.language,
+                },
               },
-            },
+            });
+
+            return persistedTemplate;
           });
 
           return {
@@ -1302,35 +1321,39 @@ export const createApiRequestHandler = (
             throw new RequestValidationError("deviceId is not valid for the current hospital");
           }
 
-          const updatedMapping = await prismaClient.device.update({
-            where: {
-              id: device.id,
-            },
-            data: {
-              assignedCounterStationId: station.id,
-            },
-            select: {
-              id: true,
-              deviceId: true,
-              deviceType: true,
-              displayName: true,
-              assignedCounterStationId: true,
-              updatedAt: true,
-            },
-          });
-
-          await prismaClient.auditLog.create({
-            data: {
-              hospitalId: scope.hospitalId,
-              actorUserId: scope.principal.userId,
-              action: "DEVICE_STATION_MAPPING_UPDATED",
-              entityType: "DEVICE",
-              entityId: device.id,
-              after: {
-                stationId: station.id,
-                counterCode: station.counterCode,
+          const updatedMapping = await prismaClient.$transaction(async (tx) => {
+            const persistedMapping = await tx.device.update({
+              where: {
+                id: device.id,
               },
-            },
+              data: {
+                assignedCounterStationId: station.id,
+              },
+              select: {
+                id: true,
+                deviceId: true,
+                deviceType: true,
+                displayName: true,
+                assignedCounterStationId: true,
+                updatedAt: true,
+              },
+            });
+
+            await tx.auditLog.create({
+              data: {
+                hospitalId: scope.hospitalId,
+                actorUserId: scope.principal.userId,
+                action: "DEVICE_STATION_MAPPING_UPDATED",
+                entityType: "DEVICE",
+                entityId: device.id,
+                after: {
+                  stationId: station.id,
+                  counterCode: station.counterCode,
+                },
+              },
+            });
+
+            return persistedMapping;
           });
 
           return {
