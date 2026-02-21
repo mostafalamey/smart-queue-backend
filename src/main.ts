@@ -5,6 +5,11 @@ import { PrismaClient } from "@prisma/client";
 import { NestFactory } from "@nestjs/core";
 import { createApiRequestHandler } from "./api";
 import { AppModule } from "./nest/app.module";
+import {
+  attachRealtimeSocketServer,
+  createRealtimeSocketServer,
+  SocketIoQueueRealtimeBroadcaster,
+} from "./realtime";
 import { loadRuntimeEnv } from "./runtime/env";
 
 export interface RuntimeHandle {
@@ -16,15 +21,22 @@ export const bootstrap = async (): Promise<RuntimeHandle> => {
   const env = loadRuntimeEnv();
 
   const prismaClient = new PrismaClient();
+  const realtimeSocketServer = createRealtimeSocketServer();
+  const realtimeBroadcaster = new SocketIoQueueRealtimeBroadcaster(
+    realtimeSocketServer
+  );
   const requestHandler = createApiRequestHandler(prismaClient, {
     jwtAccessTokenSecret: env.jwtAccessTokenSecret,
     jwtRefreshTokenSecret: env.jwtRefreshTokenSecret,
     jwtAccessTokenExpiresInSeconds: env.jwtAccessTokenExpiresInSeconds,
     jwtRefreshTokenExpiresInSeconds: env.jwtRefreshTokenExpiresInSeconds,
+  }, {
+    realtimeBroadcaster,
   });
   const app = await NestFactory.create(AppModule.register(requestHandler), {
     bodyParser: false,
   });
+  attachRealtimeSocketServer(realtimeSocketServer, app.getHttpServer());
 
   let prismaConnected = false;
   let appListening = false;
@@ -57,6 +69,8 @@ export const bootstrap = async (): Promise<RuntimeHandle> => {
     if (appListening) {
       await app.close().catch(() => undefined);
     }
+
+    await realtimeSocketServer.close().catch(() => undefined);
 
     if (prismaConnected) {
       await prismaClient.$disconnect().catch(() => undefined);

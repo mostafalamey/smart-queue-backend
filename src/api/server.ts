@@ -16,6 +16,10 @@ import {
   refreshAuthTokens,
   verifyAccessToken,
 } from "../auth";
+import {
+  NoopQueueRealtimeBroadcaster,
+  QueueRealtimeBroadcaster,
+} from "../realtime";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -62,6 +66,14 @@ interface ParsedLogoutPayload {
 interface AppRequestContext {
   requestId: string;
   principal?: AuthenticatedPrincipal;
+}
+
+interface RealtimeEmitInput {
+  operation: string;
+  context: AppRequestContext;
+  actor: QueueActor;
+  result: HttpResponse;
+  fallbackServiceId?: string;
 }
 
 class RequestValidationError extends Error {
@@ -534,6 +546,66 @@ const parseLogoutPayload = (payload: JsonRecord): ParsedLogoutPayload => {
   };
 };
 
+const getStringProperty = (
+  value: unknown,
+  key: string
+): string | undefined => {
+  const record = asRecord(value);
+  const candidate = record?.[key];
+  return typeof candidate === "string" && candidate.trim().length > 0
+    ? candidate
+    : undefined;
+};
+
+const isSuccessfulResponse = (status: number): boolean =>
+  status >= 200 && status < 300;
+
+const extractRealtimeServiceId = (
+  resultBody: unknown,
+  fallbackServiceId?: string
+): string | undefined => {
+  const bodyRecord = asRecord(resultBody);
+
+  return (
+    getStringProperty(resultBody, "serviceId") ??
+    getStringProperty(bodyRecord?.destinationTicket, "serviceId") ??
+    getStringProperty(bodyRecord?.sourceTicket, "serviceId") ??
+    fallbackServiceId
+  );
+};
+
+const extractRealtimeTicketId = (resultBody: unknown): string | undefined => {
+  const bodyRecord = asRecord(resultBody);
+
+  return (
+    getStringProperty(resultBody, "id") ??
+    getStringProperty(resultBody, "ticketId") ??
+    getStringProperty(bodyRecord?.destinationTicket, "id") ??
+    getStringProperty(bodyRecord?.sourceTicket, "id")
+  );
+};
+
+const emitRealtimeForSuccessfulTellerMutation = (
+  broadcaster: QueueRealtimeBroadcaster,
+  input: RealtimeEmitInput
+): void => {
+  if (!isSuccessfulResponse(input.result.status)) {
+    return;
+  }
+
+  const event = {
+    requestId: input.context.requestId,
+    operation: input.operation,
+    ticketId: extractRealtimeTicketId(input.result.body),
+    serviceId: extractRealtimeServiceId(input.result.body, input.fallbackServiceId),
+    stationId: input.actor.stationId,
+    occurredAt: new Date().toISOString(),
+  };
+
+  broadcaster.broadcastQueueUpdated(event);
+  broadcaster.broadcastNowServingUpdated(event);
+};
+
 const withPayload = async <TPayload>(
   context: AppRequestContext,
   request: IncomingMessage,
@@ -618,6 +690,10 @@ export interface ApiSecurityConfig {
   jwtRefreshTokenExpiresInSeconds: number;
 }
 
+export interface ApiRequestHandlerOptions {
+  realtimeBroadcaster?: QueueRealtimeBroadcaster;
+}
+
 export type ApiRequestHandler = (
   request: IncomingMessage,
   response: ServerResponse
@@ -625,9 +701,12 @@ export type ApiRequestHandler = (
 
 export const createApiRequestHandler = (
   prismaClient: PrismaClient,
-  securityConfig: ApiSecurityConfig
+  securityConfig: ApiSecurityConfig,
+  options?: ApiRequestHandlerOptions
 ): ApiRequestHandler => {
   const tellerHandlers = createTellerApiHandlers(prismaClient);
+  const realtimeBroadcaster =
+    options?.realtimeBroadcaster ?? new NoopQueueRealtimeBroadcaster();
 
   return async (request, response) => {
     const requestContext = createRequestContext(request);
@@ -728,12 +807,22 @@ export const createApiRequestHandler = (
         response,
         parseCallNextPayload,
         securityConfig.jwtAccessTokenSecret,
-        (payload, actor) => {
-          return tellerHandlers.callNext({
+        async (payload, actor) => {
+          const result = await tellerHandlers.callNext({
             serviceId: payload.serviceId,
             stationId: requireStationId(actor),
             actor,
           });
+
+          emitRealtimeForSuccessfulTellerMutation(realtimeBroadcaster, {
+            operation: "teller.call-next",
+            context: requestContext,
+            actor,
+            result,
+            fallbackServiceId: payload.serviceId,
+          });
+
+          return result;
         }
       );
       return;
@@ -746,11 +835,20 @@ export const createApiRequestHandler = (
         response,
         parseTicketActionPayload,
         securityConfig.jwtAccessTokenSecret,
-        (payload, actor) => {
-          return tellerHandlers.recall({
+        async (payload, actor) => {
+          const result = await tellerHandlers.recall({
             ticketId: payload.ticketId,
             actor,
           });
+
+          emitRealtimeForSuccessfulTellerMutation(realtimeBroadcaster, {
+            operation: "teller.recall",
+            context: requestContext,
+            actor,
+            result,
+          });
+
+          return result;
         }
       );
       return;
@@ -763,11 +861,20 @@ export const createApiRequestHandler = (
         response,
         parseTicketActionPayload,
         securityConfig.jwtAccessTokenSecret,
-        (payload, actor) => {
-          return tellerHandlers.startServing({
+        async (payload, actor) => {
+          const result = await tellerHandlers.startServing({
             ticketId: payload.ticketId,
             actor,
           });
+
+          emitRealtimeForSuccessfulTellerMutation(realtimeBroadcaster, {
+            operation: "teller.start-serving",
+            context: requestContext,
+            actor,
+            result,
+          });
+
+          return result;
         }
       );
       return;
@@ -780,11 +887,20 @@ export const createApiRequestHandler = (
         response,
         parseTicketActionPayload,
         securityConfig.jwtAccessTokenSecret,
-        (payload, actor) => {
-          return tellerHandlers.skipNoShow({
+        async (payload, actor) => {
+          const result = await tellerHandlers.skipNoShow({
             ticketId: payload.ticketId,
             actor,
           });
+
+          emitRealtimeForSuccessfulTellerMutation(realtimeBroadcaster, {
+            operation: "teller.skip-no-show",
+            context: requestContext,
+            actor,
+            result,
+          });
+
+          return result;
         }
       );
       return;
@@ -797,11 +913,20 @@ export const createApiRequestHandler = (
         response,
         parseTicketActionPayload,
         securityConfig.jwtAccessTokenSecret,
-        (payload, actor) => {
-          return tellerHandlers.complete({
+        async (payload, actor) => {
+          const result = await tellerHandlers.complete({
             ticketId: payload.ticketId,
             actor,
           });
+
+          emitRealtimeForSuccessfulTellerMutation(realtimeBroadcaster, {
+            operation: "teller.complete",
+            context: requestContext,
+            actor,
+            result,
+          });
+
+          return result;
         }
       );
       return;
@@ -815,11 +940,21 @@ export const createApiRequestHandler = (
         parseTransferPayload,
         securityConfig.jwtAccessTokenSecret,
         async (payload, actor) => {
-          return tellerHandlers.transfer({
+          const result = await tellerHandlers.transfer({
             ticketId: payload.ticketId,
             destination: payload.destination,
             actor,
           });
+
+          emitRealtimeForSuccessfulTellerMutation(realtimeBroadcaster, {
+            operation: "teller.transfer",
+            context: requestContext,
+            actor,
+            result,
+            fallbackServiceId: payload.destination.serviceId,
+          });
+
+          return result;
         }
       );
       return;
@@ -832,13 +967,22 @@ export const createApiRequestHandler = (
         response,
         parseChangePriorityPayload,
         securityConfig.jwtAccessTokenSecret,
-        (payload, actor) => {
-          return tellerHandlers.changePriority({
+        async (payload, actor) => {
+          const result = await tellerHandlers.changePriority({
             ticketId: payload.ticketId,
             priorityCategoryId: payload.priorityCategoryId,
             priorityWeight: payload.priorityWeight,
             actor,
           });
+
+          emitRealtimeForSuccessfulTellerMutation(realtimeBroadcaster, {
+            operation: "teller.change-priority",
+            context: requestContext,
+            actor,
+            result,
+          });
+
+          return result;
         }
       );
       return;
