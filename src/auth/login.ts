@@ -1,15 +1,24 @@
 import { AppRole, PrismaClient, RoleAssignment } from "@prisma/client";
 import { issueAuthTokens, IssuedAuthTokens, TokenIssuerConfig } from "./tokens";
 import {
-  createScryptPasswordHash,
+  createArgon2idPasswordHash,
   verifyPasswordHash,
   verifyPasswordHashWithMetadata,
 } from "./password";
 
 const MAX_FAILED_ATTEMPTS = 5;
 const LOCKOUT_DURATION_MS = 15 * 60 * 1000;
-const DUMMY_PASSWORD_HASH = createScryptPasswordHash("dummy-password");
 const BASIC_EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+let dummyPasswordHashPromise: Promise<string> | null = null;
+
+const getDummyPasswordHash = (): Promise<string> => {
+  if (!dummyPasswordHashPromise) {
+    dummyPasswordHashPromise = createArgon2idPasswordHash("dummy-password");
+  }
+
+  return dummyPasswordHashPromise;
+};
 
 export interface LoginInput {
   email: string;
@@ -160,7 +169,8 @@ export const loginWithPassword = async (
     });
 
     if (!candidateUser) {
-      verifyPasswordHash(input.password, DUMMY_PASSWORD_HASH);
+      const dummyPasswordHash = await getDummyPasswordHash();
+      await verifyPasswordHash(input.password, dummyPasswordHash);
       throw invalidCredentials();
     }
 
@@ -181,16 +191,21 @@ export const loginWithPassword = async (
     });
 
     if (!lockedUser || !lockedUser.isActive) {
-      verifyPasswordHash(input.password, DUMMY_PASSWORD_HASH);
+      const dummyPasswordHash = await getDummyPasswordHash();
+      await verifyPasswordHash(input.password, dummyPasswordHash);
       throw invalidCredentials();
     }
 
     ensureNotLocked(lockedUser.lockedUntil);
 
-    const passwordVerification = verifyPasswordHashWithMetadata(
+    const passwordVerification = await verifyPasswordHashWithMetadata(
       input.password,
       lockedUser.passwordHash
     );
+
+    const rehashedPassword = passwordVerification.needsRehash
+      ? await createArgon2idPasswordHash(input.password)
+      : undefined;
 
     if (!passwordVerification.isValid) {
       const updatedFailedLoginAttempts = lockedUser.failedLoginAttempts + 1;
@@ -243,9 +258,7 @@ export const loginWithPassword = async (
         data: {
           failedLoginAttempts: 0,
           lockedUntil: null,
-          passwordHash: passwordVerification.needsRehash
-            ? createScryptPasswordHash(input.password)
-            : undefined,
+          passwordHash: rehashedPassword,
         },
       })
       .catch((error: unknown) => {

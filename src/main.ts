@@ -1,7 +1,10 @@
 ﻿/// <reference path="./types/node-shim.d.ts" />
 
+import "reflect-metadata";
 import { PrismaClient } from "@prisma/client";
-import { createApiServer } from "./api";
+import { NestFactory } from "@nestjs/core";
+import { createApiRequestHandler } from "./api";
+import { AppModule } from "./nest/app.module";
 import { loadRuntimeEnv } from "./runtime/env";
 
 export interface RuntimeHandle {
@@ -9,69 +12,22 @@ export interface RuntimeHandle {
   stop: () => Promise<void>;
 }
 
-const listen = (
-  server: { listen: (port: number, callback?: () => void) => void },
-  port: number
-): Promise<void> => {
-  return new Promise((resolve, reject) => {
-    const emitter = server as unknown as {
-      once?: (event: string, handler: (...args: unknown[]) => void) => void;
-      removeListener?: (
-        event: string,
-        handler: (...args: unknown[]) => void
-      ) => void;
-    };
-
-    const onError = (error: unknown): void => {
-      if (typeof emitter.removeListener === "function") {
-        emitter.removeListener("listening", onListening);
-      }
-      reject(error);
-    };
-
-    const onListening = (): void => {
-      if (typeof emitter.removeListener === "function") {
-        emitter.removeListener("error", onError);
-      }
-      resolve();
-    };
-
-    if (typeof emitter.once === "function") {
-      emitter.once("error", onError);
-      emitter.once("listening", onListening);
-    }
-
-    try {
-      server.listen(port);
-    } catch (error: unknown) {
-      if (typeof emitter.removeListener === "function") {
-        emitter.removeListener("error", onError);
-        emitter.removeListener("listening", onListening);
-      }
-      reject(error);
-    }
-  });
-};
-
-const close = (
-  server: { close: (callback?: () => void) => void }
-): Promise<void> => {
-  return new Promise((resolve) => {
-    server.close(() => resolve());
-  });
-};
-
 export const bootstrap = async (): Promise<RuntimeHandle> => {
   const env = loadRuntimeEnv();
 
   const prismaClient = new PrismaClient();
-  const apiServer = createApiServer(prismaClient, {
+  const requestHandler = createApiRequestHandler(prismaClient, {
     jwtAccessTokenSecret: env.jwtAccessTokenSecret,
     jwtRefreshTokenSecret: env.jwtRefreshTokenSecret,
     jwtAccessTokenExpiresInSeconds: env.jwtAccessTokenExpiresInSeconds,
     jwtRefreshTokenExpiresInSeconds: env.jwtRefreshTokenExpiresInSeconds,
   });
+  const app = await NestFactory.create(AppModule.register(requestHandler), {
+    bodyParser: false,
+  });
+
   let prismaConnected = false;
+  let appListening = false;
   let stopPromise: Promise<void> | null = null;
 
   const processEmitter = process as typeof process & {
@@ -98,7 +54,9 @@ export const bootstrap = async (): Promise<RuntimeHandle> => {
   };
 
   const shutdownResources = async (): Promise<void> => {
-    await close(apiServer).catch(() => undefined);
+    if (appListening) {
+      await app.close().catch(() => undefined);
+    }
 
     if (prismaConnected) {
       await prismaClient.$disconnect().catch(() => undefined);
@@ -108,7 +66,8 @@ export const bootstrap = async (): Promise<RuntimeHandle> => {
   try {
     await prismaClient.$connect();
     prismaConnected = true;
-    await listen(apiServer, env.port);
+    await app.listen(env.port);
+    appListening = true;
   } catch (error: unknown) {
     await shutdownResources();
     throw error;

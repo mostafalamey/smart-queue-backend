@@ -1,0 +1,50 @@
+services:
+  api:
+    image: node:22-alpine
+    working_dir: /app
+    command: sh -c "npm ci && npm run start"
+    ports:
+      - "${PORT:-3000}:3000"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      JWT_ACCESS_TOKEN_SECRET: ${JWT_ACCESS_TOKEN_SECRET}
+      JWT_REFRESH_TOKEN_SECRET: ${JWT_REFRESH_TOKEN_SECRET}
+      JWT_ACCESS_TOKEN_EXPIRES_IN_SECONDS: ${JWT_ACCESS_TOKEN_EXPIRES_IN_SECONDS:-900}
+      JWT_REFRESH_TOKEN_EXPIRES_IN_SECONDS: ${JWT_REFRESH_TOKEN_EXPIRES_IN_SECONDS:-2592000}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+    volumes:
+      - ./:/app
+      - /app/node_modules
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-smart_queue}
+      POSTGRES_USER: ${POSTGRES_USER:-smart_queue}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-smart_queue}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-smart_queue} -d ${POSTGRES_DB:-smart_queue}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+
+volumes:
+  postgres_data:

@@ -20,7 +20,19 @@ Core API and queue engine service for Smart Queue (NestJS + PostgreSQL + Redis/B
 - main: reviewed merges only
 - feature/*: one feature per branch/PR
 
+## Local Setup
+- Copy `.env.example` to `.env` and set secrets/connection strings.
+- Install dependencies: `npm install`
+- Start backend locally: `npm run dev`
+
+## Docker Compose Baseline
+- Start stack (api + postgres + redis): `docker compose up -d`
+- Stop stack: `docker compose down`
+
 ## Focused Queue Engine Tests (Phase 2)
 - Run from backend repo root: `./scripts/run-queue-engine-tests.ps1`
 - If PowerShell execution policy blocks scripts: `powershell -ExecutionPolicy Bypass -File .\scripts\run-queue-engine-tests.ps1`
 - CI also runs these focused tests on pull requests to `main` via `.github/workflows/queue-engine-tests.yml`.
+
+## Focused Auth Tests
+- Run from backend repo root: `npm run test:auth`
