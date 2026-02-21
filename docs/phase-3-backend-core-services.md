@@ -24,7 +24,7 @@ Deliver production-ready backend foundations for API runtime, auth, realtime, jo
 - [x] Add backend packaging baseline (`package.json`, lockfile, env template, compose file).
 - [x] Add RBAC middleware/guard enforcement path for protected API routes.
 - [x] Add realtime broadcasting skeleton for queue and now-serving updates.
-- [ ] Add async jobs baseline (Redis + queue worker skeleton for retries/scheduled jobs).
+- [x] Add async jobs baseline (Redis + queue worker skeleton for retries/scheduled jobs).
 - [ ] Define admin configuration API surface stubs (resets/templates/mapping/retention).
 
 ## Completed Slice (Current)
@@ -53,10 +53,11 @@ Deliver production-ready backend foundations for API runtime, auth, realtime, jo
 - Added Socket.IO realtime skeleton in `src/realtime/*` with server attachment during bootstrap and subscription rooms by service/station.
 - Teller mutation routes now emit baseline realtime events (`queue.updated`, `now-serving.updated`) after successful operations.
 - Added reusable route guard enforcement path in `src/api/server.ts` to authenticate principals and enforce role-based access policy before protected route execution.
+- Added async jobs baseline in `src/jobs/*` using Redis + BullMQ (`Queue`, `Worker`, `QueueEvents`) with startup/shutdown lifecycle wiring in `src/main.ts`.
+- Runtime env contract now requires `REDIS_URL` in `src/runtime/env.ts` and includes baseline Redis config in `.env.example`.
 
 ## Next Slice (Immediate)
-1. Add async jobs baseline (Redis + queue worker skeleton for retries/scheduled jobs).
-2. Add RBAC middleware/guard enforcement path for protected API routes.
+1. Define admin configuration API surface stubs (resets/templates/mapping/retention).
 
 ## First Implementation Slice (Completed)
 1. Runtime bootstrap

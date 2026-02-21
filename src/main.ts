@@ -10,6 +10,7 @@ import {
   createRealtimeSocketServer,
   SocketIoQueueRealtimeBroadcaster,
 } from "./realtime";
+import { createAsyncJobsRuntime } from "./jobs";
 import { loadRuntimeEnv } from "./runtime/env";
 
 export interface RuntimeHandle {
@@ -29,6 +30,7 @@ export const bootstrap = async (): Promise<RuntimeHandle> => {
   const realtimeBroadcaster = new SocketIoQueueRealtimeBroadcaster(
     realtimeSocketServer
   );
+  const jobsRuntime = createAsyncJobsRuntime(env.redisUrl);
   const requestHandler = createApiRequestHandler(prismaClient, {
     jwtAccessTokenSecret: env.jwtAccessTokenSecret,
     jwtRefreshTokenSecret: env.jwtRefreshTokenSecret,
@@ -43,6 +45,7 @@ export const bootstrap = async (): Promise<RuntimeHandle> => {
   attachRealtimeSocketServer(realtimeSocketServer, app.getHttpServer());
 
   let prismaConnected = false;
+  let jobsReady = false;
   let appListening = false;
   let realtimeServerAttached = true;
   let stopPromise: Promise<void> | null = null;
@@ -80,6 +83,11 @@ export const bootstrap = async (): Promise<RuntimeHandle> => {
       realtimeServerAttached = false;
     }
 
+    if (jobsReady) {
+      await jobsRuntime.stop().catch(() => undefined);
+      jobsReady = false;
+    }
+
     if (prismaConnected) {
       await prismaClient.$disconnect().catch(() => undefined);
     }
@@ -88,6 +96,8 @@ export const bootstrap = async (): Promise<RuntimeHandle> => {
   try {
     await prismaClient.$connect();
     prismaConnected = true;
+    await jobsRuntime.start();
+    jobsReady = true;
     await app.listen(env.port);
     appListening = true;
     console.log(`[runtime] Smart Queue backend listening on port ${env.port}`);
@@ -131,4 +141,5 @@ if (require.main === module) {
 
 export * from "./api";
 export * from "./auth";
+export * from "./jobs";
 export * from "./queue-engine";

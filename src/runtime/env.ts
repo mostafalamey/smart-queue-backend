@@ -3,6 +3,7 @@ import "dotenv/config";
 export interface RuntimeEnv {
   port: number;
   databaseUrl: string;
+  redisUrl: string;
   jwtAccessTokenSecret: string;
   jwtRefreshTokenSecret: string;
   jwtAccessTokenExpiresInSeconds: number;
@@ -105,6 +106,7 @@ export const loadRuntimeEnv = (): RuntimeEnv => {
   return {
     port: parsePort(env.PORT),
     databaseUrl: requireEnv(env.DATABASE_URL, "DATABASE_URL"),
+    redisUrl: requireEnv(env.REDIS_URL, "REDIS_URL"),
     jwtAccessTokenSecret: requireEnv(
       env.JWT_ACCESS_TOKEN_SECRET,
       "JWT_ACCESS_TOKEN_SECRET"
