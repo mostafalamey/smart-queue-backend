@@ -2,7 +2,7 @@
 /// <reference path="../types/crypto-shim.d.ts" />
 
 import { createServer, IncomingMessage, Server, ServerResponse } from "node:http";
-import { AppRole, PrismaClient } from "@prisma/client";
+import { AppRole, PrismaClient, TemplateChannel } from "@prisma/client";
 import { createTellerApiHandlers } from "./teller";
 import { HttpResponse } from "./http";
 import { QueueActor } from "../queue-engine";
@@ -85,6 +85,12 @@ interface ParsedAdminConfigResetPayload {
 interface AppRequestContext {
   requestId: string;
   principal?: AuthenticatedPrincipal;
+}
+
+interface PrincipalAccessScope {
+  principal: AuthenticatedPrincipal;
+  hospitalId: string;
+  managerDepartmentId?: string;
 }
 
 interface RealtimeEmitInput {
@@ -646,25 +652,6 @@ const parseAdminConfigResetPayload = (
   };
 };
 
-const createAdminConfigStubResponse = (
-  context: AppRequestContext,
-  principal: AuthenticatedPrincipal,
-  surface: string,
-  payloadSummary?: Record<string, unknown>
-): HttpResponse => {
-  return {
-    status: 200,
-    body: {
-      stub: true,
-      surface,
-      requestId: context.requestId,
-      authorizedRole: principal.role,
-      message: "Admin configuration API stub is available. Persistent implementation is pending.",
-      payloadSummary,
-    },
-  };
-};
-
 const getStringProperty = (
   value: unknown,
   key: string
@@ -923,6 +910,69 @@ const withAuthorizedNoPayload = async (
   }
 };
 
+const resolvePrincipalAccessScope = async (
+  prismaClient: PrismaClient,
+  principal: AuthenticatedPrincipal
+): Promise<PrincipalAccessScope> => {
+  const user = await prismaClient.user.findUnique({
+    where: {
+      id: principal.userId,
+    },
+    select: {
+      hospitalId: true,
+      roleAssignments: {
+        where: {
+          role: AppRole.MANAGER,
+        },
+        select: {
+          departmentId: true,
+        },
+      },
+    },
+  });
+
+  if (!user) {
+    throw new ForbiddenError("Authenticated user is not available in persistence layer");
+  }
+
+  const managerDepartmentId =
+    principal.role === AppRole.MANAGER
+      ? user.roleAssignments.find(
+          (assignment) => typeof assignment.departmentId === "string"
+        )?.departmentId ?? undefined
+      : undefined;
+
+  return {
+    principal,
+    hospitalId: user.hospitalId,
+    managerDepartmentId,
+  };
+};
+
+const assertManagerDepartmentScope = (
+  scope: PrincipalAccessScope,
+  targetDepartmentId: string
+): void => {
+  if (scope.principal.role !== AppRole.MANAGER) {
+    return;
+  }
+
+  if (!scope.managerDepartmentId || scope.managerDepartmentId !== targetDepartmentId) {
+    throw new ForbiddenError("Manager access is limited to the assigned department");
+  }
+};
+
+const extractRetentionDaysFromAuditEntry = (
+  value: unknown
+): number | undefined => {
+  const record = asRecord(value);
+  const retentionDays = record?.retentionDays;
+
+  return typeof retentionDays === "number" && Number.isInteger(retentionDays)
+    ? retentionDays
+    : undefined;
+};
+
 export interface ApiSecurityConfig {
   jwtAccessTokenSecret: string;
   jwtRefreshTokenSecret: string;
@@ -1050,7 +1100,37 @@ export const createApiRequestHandler = (
           allowedRoles: ADMIN_CONFIG_SETTINGS_ALLOWED_ROLES,
         },
         async (principal, context) => {
-          return createAdminConfigStubResponse(context, principal, "templates.read");
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+          const templates = await prismaClient.messageTemplate.findMany({
+            where: {
+              hospitalId: scope.hospitalId,
+            },
+            orderBy: [
+              {
+                eventType: "asc",
+              },
+              {
+                language: "asc",
+              },
+            ],
+            select: {
+              id: true,
+              channel: true,
+              eventType: true,
+              language: true,
+              content: true,
+              isActive: true,
+              updatedAt: true,
+            },
+          });
+
+          return {
+            status: 200,
+            body: {
+              requestId: context.requestId,
+              templates,
+            },
+          };
         }
       );
       return;
@@ -1067,10 +1147,61 @@ export const createApiRequestHandler = (
           allowedRoles: ADMIN_CONFIG_SETTINGS_ALLOWED_ROLES,
         },
         async (payload, principal, context) => {
-          return createAdminConfigStubResponse(context, principal, "templates.write", {
-            templateKey: payload.templateKey,
-            language: payload.language,
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+          const template = await prismaClient.messageTemplate.upsert({
+            where: {
+              hospitalId_channel_eventType_language: {
+                hospitalId: scope.hospitalId,
+                channel: TemplateChannel.WHATSAPP,
+                eventType: payload.templateKey,
+                language: payload.language,
+              },
+            },
+            update: {
+              content: payload.content,
+              isActive: true,
+            },
+            create: {
+              hospitalId: scope.hospitalId,
+              channel: TemplateChannel.WHATSAPP,
+              eventType: payload.templateKey,
+              language: payload.language,
+              content: payload.content,
+              isActive: true,
+            },
+            select: {
+              id: true,
+              channel: true,
+              eventType: true,
+              language: true,
+              content: true,
+              isActive: true,
+              updatedAt: true,
+            },
           });
+
+          await prismaClient.auditLog.create({
+            data: {
+              hospitalId: scope.hospitalId,
+              actorUserId: scope.principal.userId,
+              action: "MESSAGE_TEMPLATE_UPSERTED",
+              entityType: "MESSAGE_TEMPLATE",
+              entityId: template.id,
+              after: {
+                channel: template.channel,
+                eventType: template.eventType,
+                language: template.language,
+              },
+            },
+          });
+
+          return {
+            status: 200,
+            body: {
+              requestId: context.requestId,
+              template,
+            },
+          };
         }
       );
       return;
@@ -1086,7 +1217,41 @@ export const createApiRequestHandler = (
           allowedRoles: ADMIN_CONFIG_SETTINGS_ALLOWED_ROLES,
         },
         async (principal, context) => {
-          return createAdminConfigStubResponse(context, principal, "mapping.read");
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+          const mappings = await prismaClient.device.findMany({
+            where: {
+              hospitalId: scope.hospitalId,
+              assignedCounterStationId: {
+                not: null,
+              },
+            },
+            select: {
+              id: true,
+              deviceId: true,
+              deviceType: true,
+              displayName: true,
+              assignedCounterStationId: true,
+              counterStation: {
+                select: {
+                  id: true,
+                  counterCode: true,
+                  serviceId: true,
+                },
+              },
+              updatedAt: true,
+            },
+            orderBy: {
+              updatedAt: "desc",
+            },
+          });
+
+          return {
+            status: 200,
+            body: {
+              requestId: context.requestId,
+              mappings,
+            },
+          };
         }
       );
       return;
@@ -1103,10 +1268,78 @@ export const createApiRequestHandler = (
           allowedRoles: ADMIN_CONFIG_SETTINGS_ALLOWED_ROLES,
         },
         async (payload, principal, context) => {
-          return createAdminConfigStubResponse(context, principal, "mapping.write", {
-            stationId: payload.stationId,
-            deviceId: payload.deviceId,
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+
+          const station = await prismaClient.counterStation.findFirst({
+            where: {
+              id: payload.stationId,
+              hospitalId: scope.hospitalId,
+            },
+            select: {
+              id: true,
+              counterCode: true,
+            },
           });
+
+          if (!station) {
+            throw new RequestValidationError("stationId is not valid for the current hospital");
+          }
+
+          const device = await prismaClient.device.findFirst({
+            where: {
+              deviceId: payload.deviceId,
+              hospitalId: scope.hospitalId,
+            },
+            select: {
+              id: true,
+              deviceId: true,
+              displayName: true,
+              deviceType: true,
+            },
+          });
+
+          if (!device) {
+            throw new RequestValidationError("deviceId is not valid for the current hospital");
+          }
+
+          const updatedMapping = await prismaClient.device.update({
+            where: {
+              id: device.id,
+            },
+            data: {
+              assignedCounterStationId: station.id,
+            },
+            select: {
+              id: true,
+              deviceId: true,
+              deviceType: true,
+              displayName: true,
+              assignedCounterStationId: true,
+              updatedAt: true,
+            },
+          });
+
+          await prismaClient.auditLog.create({
+            data: {
+              hospitalId: scope.hospitalId,
+              actorUserId: scope.principal.userId,
+              action: "DEVICE_STATION_MAPPING_UPDATED",
+              entityType: "DEVICE",
+              entityId: device.id,
+              after: {
+                stationId: station.id,
+                counterCode: station.counterCode,
+              },
+            },
+          });
+
+          return {
+            status: 200,
+            body: {
+              requestId: context.requestId,
+              mapping: updatedMapping,
+            },
+          };
         }
       );
       return;
@@ -1122,7 +1355,34 @@ export const createApiRequestHandler = (
           allowedRoles: ADMIN_CONFIG_SETTINGS_ALLOWED_ROLES,
         },
         async (principal, context) => {
-          return createAdminConfigStubResponse(context, principal, "retention.read");
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+          const latestRetentionPolicyChange = await prismaClient.auditLog.findFirst({
+            where: {
+              hospitalId: scope.hospitalId,
+              action: "RETENTION_POLICY_UPDATED",
+              entityType: "RETENTION_POLICY",
+            },
+            orderBy: {
+              occurredAt: "desc",
+            },
+            select: {
+              after: true,
+              occurredAt: true,
+            },
+          });
+
+          return {
+            status: 200,
+            body: {
+              requestId: context.requestId,
+              retentionPolicy: {
+                retentionDays: extractRetentionDaysFromAuditEntry(
+                  latestRetentionPolicyChange?.after
+                ),
+                updatedAt: latestRetentionPolicyChange?.occurredAt ?? null,
+              },
+            },
+          };
         }
       );
       return;
@@ -1139,9 +1399,34 @@ export const createApiRequestHandler = (
           allowedRoles: ADMIN_CONFIG_SETTINGS_ALLOWED_ROLES,
         },
         async (payload, principal, context) => {
-          return createAdminConfigStubResponse(context, principal, "retention.write", {
-            retentionDays: payload.retentionDays,
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+
+          const auditRecord = await prismaClient.auditLog.create({
+            data: {
+              hospitalId: scope.hospitalId,
+              actorUserId: scope.principal.userId,
+              action: "RETENTION_POLICY_UPDATED",
+              entityType: "RETENTION_POLICY",
+              entityId: scope.hospitalId,
+              after: {
+                retentionDays: payload.retentionDays,
+              },
+            },
+            select: {
+              occurredAt: true,
+            },
           });
+
+          return {
+            status: 200,
+            body: {
+              requestId: context.requestId,
+              retentionPolicy: {
+                retentionDays: payload.retentionDays,
+                updatedAt: auditRecord.occurredAt,
+              },
+            },
+          };
         }
       );
       return;
@@ -1158,14 +1443,52 @@ export const createApiRequestHandler = (
           allowedRoles: ADMIN_CONFIG_RESETS_ALLOWED_ROLES,
         },
         async (payload, principal, context) => {
-          return createAdminConfigStubResponse(
-            context,
-            principal,
-            "resets.service-counter",
-            {
-              serviceId: payload.serviceId,
-            }
-          );
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+
+          const targetService = await prismaClient.service.findFirst({
+            where: {
+              id: payload.serviceId,
+              department: {
+                hospitalId: scope.hospitalId,
+              },
+            },
+            select: {
+              id: true,
+              departmentId: true,
+              ticketPrefix: true,
+            },
+          });
+
+          if (!targetService) {
+            throw new RequestValidationError("serviceId is not valid for the current hospital");
+          }
+
+          assertManagerDepartmentScope(scope, targetService.departmentId);
+
+          await prismaClient.auditLog.create({
+            data: {
+              hospitalId: scope.hospitalId,
+              actorUserId: scope.principal.userId,
+              action: "SERVICE_COUNTER_RESET_REQUESTED",
+              entityType: "SERVICE",
+              entityId: targetService.id,
+              after: {
+                serviceId: targetService.id,
+                ticketPrefix: targetService.ticketPrefix,
+              },
+            },
+          });
+
+          return {
+            status: 200,
+            body: {
+              requestId: context.requestId,
+              accepted: true,
+              resetRequest: {
+                serviceId: targetService.id,
+              },
+            },
+          };
         }
       );
       return;
