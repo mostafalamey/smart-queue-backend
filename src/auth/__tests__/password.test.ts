@@ -1,5 +1,6 @@
 import { createHmac } from "node:crypto";
 import {
+  createArgon2idPasswordHash,
   createScryptPasswordHash,
   verifyPasswordHash,
   verifyPasswordHashWithMetadata,
@@ -11,9 +12,9 @@ const equal = (actual: unknown, expected: unknown, message?: string): void => {
   }
 };
 
-const runTest = (name: string, fn: () => void): void => {
+const runTest = async (name: string, fn: () => Promise<void>): Promise<void> => {
   try {
-    fn();
+    await fn();
   } catch (error: unknown) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new Error(`[auth-password] ${name} failed: ${reason}`);
@@ -31,57 +32,76 @@ const createHmacHash = (password: string, salt: string): string => {
   return `hmac-sha256:${salt}:${digest}`;
 };
 
-runTest("allows plain password verification outside production", () => {
-  setNodeEnv("development");
+const run = async (): Promise<void> => {
+  try {
+    await runTest("allows plain password verification outside production", async () => {
+      setNodeEnv("development");
 
-  equal(verifyPasswordHash("secret", "plain:secret"), true);
-  equal(verifyPasswordHash("wrong", "plain:secret"), false);
-});
+      equal(await verifyPasswordHash("secret", "plain:secret"), true);
+      equal(await verifyPasswordHash("wrong", "plain:secret"), false);
+    });
 
-runTest("rejects plain password hashes in production", () => {
-  setNodeEnv("production");
+    await runTest("rejects plain password hashes in production", async () => {
+      setNodeEnv("production");
 
-  equal(verifyPasswordHash("secret", "plain:secret"), false);
-});
+      equal(await verifyPasswordHash("secret", "plain:secret"), false);
+    });
 
-runTest("verifies scrypt hashes in production", () => {
-  setNodeEnv("production");
+    await runTest("verifies argon2id hashes in production", async () => {
+      setNodeEnv("production");
 
-  const hash = createScryptPasswordHash("S3cret!");
+      const hash = await createArgon2idPasswordHash("S3cret!");
 
-  equal(verifyPasswordHash("S3cret!", hash), true);
-  equal(verifyPasswordHash("bad", hash), false);
+      equal(await verifyPasswordHash("S3cret!", hash), true);
+      equal(await verifyPasswordHash("bad", hash), false);
 
-  const metadata = verifyPasswordHashWithMetadata("S3cret!", hash);
-  equal(metadata.isValid, true);
-  equal(metadata.needsRehash, false);
-});
+      const metadata = await verifyPasswordHashWithMetadata("S3cret!", hash);
+      equal(metadata.isValid, true);
+      equal(metadata.needsRehash, false);
+    });
 
-runTest("keeps legacy hmac verification for migration and marks needsRehash", () => {
-  setNodeEnv("production");
+    await runTest("verifies legacy scrypt hashes and marks needsRehash", async () => {
+      setNodeEnv("production");
 
-  const password = "S3cret!";
-  const hash = createHmacHash(password, "salt-1");
+      const hash = createScryptPasswordHash("S3cret!");
 
-  equal(verifyPasswordHash(password, hash), true);
-  equal(verifyPasswordHash("bad", hash), false);
+      equal(await verifyPasswordHash("S3cret!", hash), true);
+      equal(await verifyPasswordHash("bad", hash), false);
 
-  const metadata = verifyPasswordHashWithMetadata(password, hash);
-  equal(metadata.isValid, true);
-  equal(metadata.needsRehash, true);
-});
+      const metadata = await verifyPasswordHashWithMetadata("S3cret!", hash);
+      equal(metadata.isValid, true);
+      equal(metadata.needsRehash, true);
+    });
 
-runTest("fails closed for unknown hash formats", () => {
-  setNodeEnv("production");
+    await runTest("keeps legacy hmac verification for migration and marks needsRehash", async () => {
+      setNodeEnv("production");
 
-  const metadata = verifyPasswordHashWithMetadata(
-    "any-password",
-    "unknown-format-hash-value"
-  );
+      const password = "S3cret!";
+      const hash = createHmacHash(password, "salt-1");
 
-  equal(metadata.isValid, false);
-  equal(metadata.needsRehash, false);
-  equal(verifyPasswordHash("unknown-format-hash-value", "unknown-format-hash-value"), false);
-});
+      equal(await verifyPasswordHash(password, hash), true);
+      equal(await verifyPasswordHash("bad", hash), false);
 
-setNodeEnv(originalNodeEnv);
+      const metadata = await verifyPasswordHashWithMetadata(password, hash);
+      equal(metadata.isValid, true);
+      equal(metadata.needsRehash, true);
+    });
+
+    await runTest("fails closed for unknown hash formats", async () => {
+      setNodeEnv("production");
+
+      const metadata = await verifyPasswordHashWithMetadata(
+        "any-password",
+        "unknown-format-hash-value"
+      );
+
+      equal(metadata.isValid, false);
+      equal(metadata.needsRehash, false);
+      equal(await verifyPasswordHash("unknown-format-hash-value", "unknown-format-hash-value"), false);
+    });
+  } finally {
+    setNodeEnv(originalNodeEnv);
+  }
+};
+
+void run();

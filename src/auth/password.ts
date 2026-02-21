@@ -1,4 +1,5 @@
 import { createHmac, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import * as argon2 from "argon2";
 
 const SCRYPT_PREFIX = "scrypt";
 const SCRYPT_N = 16384;
@@ -126,47 +127,77 @@ export const createScryptPasswordHash = (password: string): string => {
   return `${SCRYPT_PREFIX}:${SCRYPT_N}:${SCRYPT_R}:${SCRYPT_P}:${saltHex}:${digestHex}`;
 };
 
+export const createArgon2idPasswordHash = async (
+  password: string
+): Promise<string> => {
+  return argon2.hash(password, {
+    type: argon2.argon2id,
+    memoryCost: 19 * 1024,
+    timeCost: 3,
+    parallelism: 1,
+    hashLength: 32,
+  });
+};
+
+const verifyArgon2idPassword = async (
+  password: string,
+  storedHash: string
+): Promise<boolean> => {
+  try {
+    return await argon2.verify(storedHash, password);
+  } catch {
+    return false;
+  }
+};
+
 export const verifyPasswordHashWithMetadata = (
   password: string,
   storedHash: string
-): PasswordVerificationResult => {
+): Promise<PasswordVerificationResult> => {
   if (storedHash.startsWith("plain:")) {
     if (isProductionEnvironment()) {
-      return {
+      return Promise.resolve({
         isValid: false,
         needsRehash: false,
-      };
+      });
     }
 
-    return {
+    return Promise.resolve({
       isValid: constantTimeEquals(password, storedHash.slice("plain:".length)),
       needsRehash: true,
-    };
+    });
   }
 
   if (storedHash.startsWith("hmac-sha256:")) {
-    return {
+    return Promise.resolve({
       isValid: verifyHmacSha256Password(password, storedHash),
       needsRehash: true,
-    };
+    });
   }
 
   if (storedHash.startsWith(`${SCRYPT_PREFIX}:`)) {
-    return {
+    return Promise.resolve({
       isValid: verifyScryptPassword(password, storedHash),
-      needsRehash: false,
-    };
+      needsRehash: true,
+    });
   }
 
-  return {
+  if (storedHash.startsWith("$argon2id$")) {
+    return verifyArgon2idPassword(password, storedHash).then((isValid) => ({
+      isValid,
+      needsRehash: false,
+    }));
+  }
+
+  return Promise.resolve({
     isValid: false,
     needsRehash: false,
-  };
+  });
 };
 
-export const verifyPasswordHash = (
+export const verifyPasswordHash = async (
   password: string,
   storedHash: string
-): boolean => {
-  return verifyPasswordHashWithMetadata(password, storedHash).isValid;
+): Promise<boolean> => {
+  return (await verifyPasswordHashWithMetadata(password, storedHash)).isValid;
 };

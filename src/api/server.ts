@@ -618,13 +618,18 @@ export interface ApiSecurityConfig {
   jwtRefreshTokenExpiresInSeconds: number;
 }
 
-export const createApiServer = (
+export type ApiRequestHandler = (
+  request: IncomingMessage,
+  response: ServerResponse
+) => Promise<void>;
+
+export const createApiRequestHandler = (
   prismaClient: PrismaClient,
   securityConfig: ApiSecurityConfig
-): Server => {
+): ApiRequestHandler => {
   const tellerHandlers = createTellerApiHandlers(prismaClient);
 
-  return createServer(async (request, response) => {
+  return async (request, response) => {
     const requestContext = createRequestContext(request);
     response.setHeader(REQUEST_ID_HEADER, requestContext.requestId);
 
@@ -843,5 +848,15 @@ export const createApiServer = (
       code: "NOT_FOUND",
       message: "Route not found",
     });
+  };
+};
+
+export const createApiServer = (
+  prismaClient: PrismaClient,
+  securityConfig: ApiSecurityConfig
+): Server => {
+  const requestHandler = createApiRequestHandler(prismaClient, securityConfig);
+  return createServer((request, response) => {
+    void requestHandler(request, response);
   });
 };
