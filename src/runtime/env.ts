@@ -10,6 +10,10 @@ const parsePort = (rawPort: string | undefined): number => {
     return 3000;
   }
 
+  if (!/^\d+$/.test(rawPort)) {
+    throw new Error("PORT must be an integer between 1 and 65535");
+  }
+
   const parsed = Number.parseInt(rawPort, 10);
   if (Number.isNaN(parsed) || parsed <= 0 || parsed > 65535) {
     throw new Error("PORT must be an integer between 1 and 65535");

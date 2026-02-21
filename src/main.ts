@@ -65,6 +65,30 @@ export const bootstrap = async (): Promise<RuntimeHandle> => {
   const prismaClient = new PrismaClient();
   const apiServer = createApiServer(prismaClient);
   let prismaConnected = false;
+  let stopPromise: Promise<void> | null = null;
+
+  const processEmitter = process as typeof process & {
+    off?: (event: string, listener: (...args: unknown[]) => void) => void;
+    removeListener?: (
+      event: string,
+      listener: (...args: unknown[]) => void
+    ) => void;
+  };
+
+  const unregisterSignalHandlers = (
+    handler: (...args: unknown[]) => void
+  ): void => {
+    if (typeof processEmitter.off === "function") {
+      processEmitter.off("SIGINT", handler);
+      processEmitter.off("SIGTERM", handler);
+      return;
+    }
+
+    if (typeof processEmitter.removeListener === "function") {
+      processEmitter.removeListener("SIGINT", handler);
+      processEmitter.removeListener("SIGTERM", handler);
+    }
+  };
 
   const shutdownResources = async (): Promise<void> => {
     await close(apiServer).catch(() => undefined);
@@ -84,7 +108,13 @@ export const bootstrap = async (): Promise<RuntimeHandle> => {
   }
 
   const stop = async (): Promise<void> => {
-    await shutdownResources();
+    if (stopPromise) {
+      return stopPromise;
+    }
+
+    unregisterSignalHandlers(onSignal);
+    stopPromise = shutdownResources();
+    return stopPromise;
   };
 
   const onSignal = (): void => {

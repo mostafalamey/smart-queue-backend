@@ -25,6 +25,8 @@ declare module "node:http" {
 
 declare const process: {
   env: Record<string, string | undefined>;
-  on(event: string, listener: () => void): void;
+  on(event: string, listener: (...args: unknown[]) => void): void;
+  off(event: string, listener: (...args: unknown[]) => void): void;
+  removeListener(event: string, listener: (...args: unknown[]) => void): void;
   exit(code?: number): never;
 };
