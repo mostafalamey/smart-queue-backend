@@ -173,7 +173,15 @@ model RoleAssignment {
 
   @@index([userId])
   @@index([departmentId])
-  @@unique([userId, role, departmentId])
+  // Uniqueness is enforced by two raw partial unique indexes in migration
+  // 20260227071112_fix_role_assignment_partial_unique_indexes, not by a plain
+  // @@unique here. A plain @@unique on (userId, role, departmentId) treats
+  // NULL != NULL in PostgreSQL, which would allow duplicate global-role rows.
+  // The partial indexes enforce:
+  //   - dept-scoped: UNIQUE (userId, role, departmentId) WHERE departmentId IS NOT NULL
+  //   - global:      UNIQUE (userId, role)               WHERE departmentId IS NULL
+  // Do NOT restore @@unique here — Prisma would regenerate the plain index and
+  // silently undo the NULL-safety fix.
 }
 
 model PriorityCategory {
@@ -245,11 +253,11 @@ model Ticket {
   // Business rule: At most one *active* ticket per (phoneNumber, serviceId).
   // Active tickets are those with status in {WAITING, CALLED, SERVING}.
   // Enforced at two levels:
-  //   1. Application: pg_advisory_xact_lock serializes concurrent kiosk requests
-  //      for the same phone+service pair inside the creation transaction.
-  //   2. Database: three partial unique indexes (one per active status value) act
-  //      as a hard backstop — see migration
-  //      20260227080000_add_ticket_active_partial_unique_indexes.
+  //   1. Application: SELECT ... FOR UPDATE on the Service row serializes
+  //      concurrent kiosk requests inside the creation transaction.
+  //   2. Database: a single partial unique index covering all active statuses
+  //      acts as a hard backstop — see migration
+  //      20260227090000_consolidate_ticket_active_unique_index.
   // Prisma does not support partial unique indexes in schema.prisma; these are
   // maintained via raw migrations and must be kept in sync with TicketStatus enum.
   @@index([phoneNumber, serviceId, status])
