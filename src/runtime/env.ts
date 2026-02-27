@@ -3,7 +3,10 @@ import "dotenv/config";
 export interface RuntimeEnv {
   port: number;
   databaseUrl: string;
-  /** Optional in development: when absent, the async jobs runtime runs in no-op mode. */
+  /**
+   * Required in production unless DISABLE_ASYNC_JOBS=true is explicitly set.
+   * When absent in development the async jobs runtime runs in no-op mode.
+   */
   redisUrl: string | undefined;
   asyncJobsWorkerConcurrency: number;
   asyncJobsRetainCompletedJobs: number;
@@ -64,6 +67,26 @@ const parsePositiveIntegerWithDefault = (
   return parsed;
 };
 
+const parseRedisUrl = (
+  rawValue: string | undefined,
+  nodeEnv: string
+): string | undefined => {
+  const value = rawValue?.trim() || undefined;
+
+  if (!value && nodeEnv === "production") {
+    const disableExplicit =
+      process.env.DISABLE_ASYNC_JOBS?.trim().toLowerCase() === "true";
+    if (!disableExplicit) {
+      throw new Error(
+        "REDIS_URL is required in production. " +
+          "Set DISABLE_ASYNC_JOBS=true to intentionally run without background jobs (not recommended)."
+      );
+    }
+  }
+
+  return value;
+};
+
 const parseRealtimeCorsAllowedOrigins = (
   rawValue: string | undefined,
   nodeEnv: string
@@ -110,7 +133,7 @@ export const loadRuntimeEnv = (): RuntimeEnv => {
   return {
     port: parsePort(env.PORT),
     databaseUrl: requireEnv(env.DATABASE_URL, "DATABASE_URL"),
-    redisUrl: env.REDIS_URL?.trim() || undefined,
+    redisUrl: parseRedisUrl(env.REDIS_URL, nodeEnv),
     asyncJobsWorkerConcurrency: parsePositiveIntegerWithDefault(
       env.ASYNC_JOBS_WORKER_CONCURRENCY,
       "ASYNC_JOBS_WORKER_CONCURRENCY",
