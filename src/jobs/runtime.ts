@@ -105,6 +105,24 @@ const parseRedisUrl = (
   return config;
 };
 
+/**
+ * No-op runtime used in development when Redis is not configured.
+ * All jobs are silently dropped — safe for local kiosk/teller testing.
+ */
+export const createNoopAsyncJobsRuntime = (): AsyncJobsRuntime => ({
+  start: async () => {
+    console.warn(
+      "[jobs] Redis not configured — async jobs runtime is disabled (noop mode). " +
+      "Set REDIS_URL in .env to enable background jobs."
+    );
+  },
+  enqueueJob: async (_name, _payload) => {
+    console.warn("[jobs] Skipping job enqueue — async jobs runtime is in noop mode");
+    return undefined;
+  },
+  stop: async () => {},
+});
+
 export const createAsyncJobsRuntime = (
   redisUrl: string,
   workerConcurrency = 1,

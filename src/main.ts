@@ -10,7 +10,7 @@ import {
   createRealtimeSocketServer,
   SocketIoQueueRealtimeBroadcaster,
 } from "./realtime";
-import { createAsyncJobsRuntime } from "./jobs";
+import { createAsyncJobsRuntime, createNoopAsyncJobsRuntime } from "./jobs";
 import { loadRuntimeEnv } from "./runtime/env";
 
 export interface RuntimeHandle {
@@ -30,12 +30,14 @@ export const bootstrap = async (): Promise<RuntimeHandle> => {
   const realtimeBroadcaster = new SocketIoQueueRealtimeBroadcaster(
     realtimeSocketServer
   );
-  const jobsRuntime = createAsyncJobsRuntime(
-    env.redisUrl,
-    env.asyncJobsWorkerConcurrency,
-    env.asyncJobsRetainCompletedJobs,
-    env.asyncJobsRetainFailedJobs
-  );
+  const jobsRuntime = env.redisUrl
+    ? createAsyncJobsRuntime(
+        env.redisUrl,
+        env.asyncJobsWorkerConcurrency,
+        env.asyncJobsRetainCompletedJobs,
+        env.asyncJobsRetainFailedJobs
+      )
+    : createNoopAsyncJobsRuntime();
   const requestHandler = createApiRequestHandler(prismaClient, {
     jwtAccessTokenSecret: env.jwtAccessTokenSecret,
     jwtRefreshTokenSecret: env.jwtRefreshTokenSecret,

@@ -3,7 +3,8 @@ import "dotenv/config";
 export interface RuntimeEnv {
   port: number;
   databaseUrl: string;
-  redisUrl: string;
+  /** Optional in development: when absent, the async jobs runtime runs in no-op mode. */
+  redisUrl: string | undefined;
   asyncJobsWorkerConcurrency: number;
   asyncJobsRetainCompletedJobs: number;
   asyncJobsRetainFailedJobs: number;
@@ -109,7 +110,7 @@ export const loadRuntimeEnv = (): RuntimeEnv => {
   return {
     port: parsePort(env.PORT),
     databaseUrl: requireEnv(env.DATABASE_URL, "DATABASE_URL"),
-    redisUrl: requireEnv(env.REDIS_URL, "REDIS_URL"),
+    redisUrl: env.REDIS_URL?.trim() || undefined,
     asyncJobsWorkerConcurrency: parsePositiveIntegerWithDefault(
       env.ASYNC_JOBS_WORKER_CONCURRENCY,
       "ASYNC_JOBS_WORKER_CONCURRENCY",
