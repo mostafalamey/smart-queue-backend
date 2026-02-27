@@ -68,10 +68,90 @@ export interface QueueEngineRepository {
     updatedAt: Date;
   }): Promise<void>;
   insertEvent(event: QueueEventRecord): Promise<void>;
+  /**
+   * Acquires a FOR UPDATE row lock on the Service record and returns the next
+   * sequence number and formatted ticket number for the given service + date
+   * bucket. Must be called inside a transaction.
+   */
+  lockServiceAndGenerateNextSequence(args: {
+    serviceId: string;
+    ticketDate: Date;
+  }): Promise<{ sequenceNumber: number; ticketNumber: string }>;
+}
+
+export interface IssueKioskTicketInput {
+  hospitalId: string;
+  departmentId: string;
+  serviceId: string;
+  ticketDate: Date;
+  phoneNumber: string;
+  priorityCategoryId: string;
+  priorityWeight: number;
+  actor: QueueActor;
 }
 
 export class QueueEngineService {
   constructor(private readonly repository: QueueEngineRepository) {}
+
+  /**
+   * Issues a new ticket for a kiosk walk-in patient.
+   * Runs entirely inside a single transaction:
+   *   1. Locks the Service row (FOR UPDATE) — serializes concurrent issuance
+   *      for this service and produces a monotonic sequence number.
+   *   2. Guards against duplicate active tickets for the same phone+service.
+   *   3. Creates the Ticket and its CREATED event.
+   */
+  async issueKioskTicket(input: IssueKioskTicketInput): Promise<QueueTicket> {
+    const timestamp = new Date();
+
+    return this.repository.runInTransaction(async () => {
+      const { sequenceNumber, ticketNumber } =
+        await this.repository.lockServiceAndGenerateNextSequence({
+          serviceId: input.serviceId,
+          ticketDate: input.ticketDate,
+        });
+
+      await this.assertNoDuplicateActiveTicketInTransaction({
+        serviceId: input.serviceId,
+        phoneNumber: input.phoneNumber,
+      });
+
+      let created: QueueTicket;
+      try {
+        created = await this.repository.createTicket({
+          hospitalId: input.hospitalId,
+          departmentId: input.departmentId,
+          serviceId: input.serviceId,
+          ticketDate: input.ticketDate,
+          sequenceNumber,
+          ticketNumber,
+          phoneNumber: input.phoneNumber,
+          priorityCategoryId: input.priorityCategoryId,
+          priorityWeight: input.priorityWeight,
+          now: timestamp,
+        });
+      } catch (error: unknown) {
+        if (this.isDuplicateConstraintError(error)) {
+          throw new QueueEngineError(
+            "Only one active ticket per phone number per service is allowed",
+            "DUPLICATE_ACTIVE_TICKET"
+          );
+        }
+        throw error;
+      }
+
+      await this.repository.insertEvent({
+        ticketId: created.id,
+        eventType: "CREATED",
+        actorType: input.actor.actorType,
+        actorUserId: input.actor.actorUserId,
+        stationId: input.actor.stationId,
+        occurredAt: timestamp,
+      });
+
+      return created;
+    });
+  }
 
   async createTicket(input: CreateTicketInput): Promise<QueueTicket> {
     const timestamp = new Date();
