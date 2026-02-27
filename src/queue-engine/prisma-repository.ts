@@ -342,7 +342,7 @@ export class PrismaQueueEngineRepository implements QueueEngineRepository {
     destination: TransferDestinationInput;
   }): Promise<QueueTicket> {
     const client = this.getClient();
-    const generated = await this.generateTransferSequenceAndTicketNumber({
+    const generated = await this.lockServiceAndGenerateNextSequence({
       serviceId: args.destination.serviceId,
       ticketDate: args.destination.ticketDate,
     });
@@ -436,7 +436,7 @@ export class PrismaQueueEngineRepository implements QueueEngineRepository {
     return this.transactionClient ?? this.prisma;
   }
 
-  private async generateTransferSequenceAndTicketNumber(args: {
+  async lockServiceAndGenerateNextSequence(args: {
     serviceId: string;
     ticketDate: Date;
   }): Promise<{ sequenceNumber: number; ticketNumber: string }> {
