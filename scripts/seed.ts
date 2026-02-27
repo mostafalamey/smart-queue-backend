@@ -7,6 +7,10 @@
  *   or:   npm run seed
  *
  * Safe to re-run: uses upserts throughout so it won't create duplicates.
+ *
+ * Credential logging:
+ *   By default the admin password is redacted in output to avoid leaking it in
+ *   CI logs or shell history. Set SEED_PRINT_CREDENTIALS=true to print it.
  */
 
 import "dotenv/config";
@@ -18,6 +22,16 @@ const prisma = new PrismaClient();
 const HOSPITAL_ID = "hospital-seed-001";
 
 async function main() {
+  const nodeEnv = process.env.NODE_ENV?.trim().toLowerCase();
+
+  if (nodeEnv === "production" && process.env.ALLOW_SEED_IN_PROD !== "true") {
+    console.error(
+      "[seed] ERROR: Refusing to seed in production environment.\n" +
+        "       Set ALLOW_SEED_IN_PROD=true to override (use with extreme caution)."
+    );
+    process.exit(1);
+  }
+
   console.log("[seed] Starting...");
 
   // ── 1. Hospital ─────────────────────────────────────────────────────────────
@@ -122,6 +136,8 @@ async function main() {
   // ── 5. Admin user ────────────────────────────────────────────────────────────
   const adminEmail = "admin@hospital.local";
   const adminPassword = "Admin@SmartQueue1";
+  const printCredentials =
+    process.env.SEED_PRINT_CREDENTIALS?.trim().toLowerCase() === "true";
   const passwordHash = await createArgon2idPasswordHash(adminPassword);
 
   const adminUser = await prisma.user.upsert({
@@ -145,7 +161,11 @@ async function main() {
     });
   }
 
-  console.log(`[seed] Admin user: ${adminEmail} / password: ${adminPassword}`);
+  if (printCredentials) {
+    console.log(`[seed] Admin user: ${adminEmail} / password: ${adminPassword}`);
+  } else {
+    console.log(`[seed] Admin user: ${adminEmail} / password: <redacted — set SEED_PRINT_CREDENTIALS=true to reveal>`);
+  }
   console.log("[seed] NOTE: mustChangePassword=true — change on first login.");
 
   // ── 6. Counter stations (one per service for testing) ────────────────────────
@@ -171,7 +191,11 @@ async function main() {
   console.log(`  GET /departments          → lists 3 departments`);
   console.log(`  GET /departments/:id/services → lists services`);
   console.log(`  POST /tickets             → issues a ticket`);
-  console.log(`  POST /auth/login          → { email: '${adminEmail}', password: '${adminPassword}' }`);
+  if (printCredentials) {
+    console.log(`  POST /auth/login          → { email: '${adminEmail}', password: '${adminPassword}' }`);
+  } else {
+    console.log(`  POST /auth/login          → { email: '${adminEmail}', password: '<redacted>' }`);
+  }
 }
 
 main()
