@@ -53,9 +53,9 @@ npm run seed                # seed reference data
 ## Kiosk API Endpoints (added in Phase 3/4)
 
 | Method | Path | Auth | Description |
-|---|---|---|---|
-| GET | `/departments` | None | List all active departments for the hospital |
-| GET | `/departments/:id/services` | None | List services for a given department |
+|------|---|---|---|
+| GET  | `/departments` | None | List all active departments for the hospital |
+| GET  | `/departments/:id/services` | None | List services for a given department |
 | POST | `/tickets` | None | Issue a new ticket (duplicate guard, sequence numbering, event logging) |
 
 ## Known Pending Items (Phase 3 tail)

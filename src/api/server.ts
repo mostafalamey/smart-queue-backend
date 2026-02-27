@@ -5,7 +5,12 @@ import { createServer, IncomingMessage, Server, ServerResponse } from "node:http
 import { AppRole, PrismaClient, TemplateChannel } from "@prisma/client";
 import { createTellerApiHandlers } from "./teller";
 import { HttpResponse } from "./http";
-import { QueueActor } from "../queue-engine";
+import {
+  createQueueEngineService,
+  QueueEngineError,
+  QueueActor,
+  QueueTicket,
+} from "../queue-engine";
 import {
   AuthenticatedPrincipal,
   AuthTokenError,
@@ -809,6 +814,8 @@ export const __serverTestables = {
   assertRoleAllowedByPolicy,
   mapPrincipalToQueueActor,
   TELLER_ROUTE_ALLOWED_ROLES,
+  parseKioskIssueTicketPayload,
+  getTicketDateBucket,
 };
 
 const withPayload = async <TPayload>(
@@ -1059,6 +1066,7 @@ export const createApiRequestHandler = (
   options?: ApiRequestHandlerOptions
 ): ApiRequestHandler => {
   const tellerHandlers = createTellerApiHandlers(prismaClient);
+  const queueEngineService = createQueueEngineService({ prismaClient });
   const realtimeBroadcaster =
     options?.realtimeBroadcaster ?? new NoopQueueRealtimeBroadcaster();
 
@@ -1098,7 +1106,7 @@ export const createApiRequestHandler = (
 
     // Handle CORS preflight
     if (method === "OPTIONS") {
-      response.writeHead(204);
+      response.statusCode = 204;
       response.end();
       return;
     }
@@ -1200,84 +1208,24 @@ export const createApiRequestHandler = (
             return { status: 422, body: { code: "NO_PRIORITY_CONFIGURED", message: "No priority categories configured for this hospital" } };
           }
 
-          // 3. Issue ticket atomically
-          type CreatedTicket = {
-            id: string;
-            ticketNumber: string;
-            serviceId: string;
-            departmentId: string;
-            phoneNumber: string;
-            createdAt: Date;
-          };
-
-          let ticket: CreatedTicket;
+          // 3. Issue ticket via queue engine (locking, sequencing, duplicate guard, event)
+          let ticket: QueueTicket;
           try {
-            ticket = await prismaClient.$transaction(async (tx) => {
-              // Duplicate active ticket guard
-              const existing = await tx.ticket.findFirst({
-                where: {
-                  serviceId: payload.serviceId,
-                  phoneNumber: payload.phoneNumber,
-                  status: { in: ["WAITING", "CALLED", "SERVING"] },
-                },
-                select: { id: true, ticketNumber: true },
-              });
-
-              if (existing) {
-                const err = new Error("Duplicate active ticket");
-                (err as NodeJS.ErrnoException).code = "DUPLICATE_ACTIVE_TICKET";
-                throw err;
-              }
-
-              // Next sequence number within this service+date bucket
-              const maxResult = await tx.ticket.aggregate({
-                where: { serviceId: payload.serviceId, ticketDate },
-                _max: { sequenceNumber: true },
-              });
-              const sequenceNumber = (maxResult._max.sequenceNumber ?? 0) + 1;
-              const ticketNumber = `${service.ticketPrefix}-${String(sequenceNumber).padStart(3, "0")}`;
-              const now = new Date();
-
-              const created = await tx.ticket.create({
-                data: {
-                  hospitalId: hospital.id,
-                  departmentId: payload.departmentId,
-                  serviceId: payload.serviceId,
-                  ticketDate,
-                  sequenceNumber,
-                  ticketNumber,
-                  phoneNumber: payload.phoneNumber,
-                  priorityCategoryId: defaultPriority.id,
-                  status: "WAITING",
-                  createdAt: now,
-                  updatedAt: now,
-                },
-                select: {
-                  id: true,
-                  ticketNumber: true,
-                  serviceId: true,
-                  departmentId: true,
-                  phoneNumber: true,
-                  createdAt: true,
-                },
-              });
-
-              await tx.ticketEvent.create({
-                data: {
-                  ticketId: created.id,
-                  eventType: "CREATED",
-                  actorType: "KIOSK",
-                  occurredAt: now,
-                },
-              });
-
-              return created;
+            ticket = await queueEngineService.issueKioskTicket({
+              hospitalId: hospital.id,
+              departmentId: payload.departmentId,
+              serviceId: payload.serviceId,
+              ticketDate,
+              phoneNumber: payload.phoneNumber,
+              priorityCategoryId: defaultPriority.id,
+              priorityWeight: defaultPriority.weight,
+              actor: { actorType: "KIOSK" },
             });
           } catch (error: unknown) {
-            const code =
-              (error as NodeJS.ErrnoException).code ||
-              (error as { code?: string }).code;
-            if (code === "DUPLICATE_ACTIVE_TICKET") {
+            if (
+              error instanceof QueueEngineError &&
+              error.code === "DUPLICATE_ACTIVE_TICKET"
+            ) {
               return {
                 status: 409,
                 body: {
@@ -1286,17 +1234,38 @@ export const createApiRequestHandler = (
                 },
               };
             }
+            if (
+              error instanceof QueueEngineError &&
+              error.code === "SERVICE_NOT_FOUND"
+            ) {
+              return {
+                status: 404,
+                body: { code: "SERVICE_NOT_FOUND", message: "Service not found or inactive" },
+              };
+            }
             throw error;
           }
 
           // 4. Queue snapshot — tickets ahead with equal or higher priority weight
+          // Count tickets that will be served before this one under the
+          // documented ordering rule: priority first, FIFO within priority.
+          //   - Any active ticket with a strictly higher priority weight goes first.
+          //   - Among tickets with the same priority weight, earlier sequenceNumber
+          //     (within the same day bucket) goes first.
           const peopleAhead = await prismaClient.ticket.count({
             where: {
               serviceId: payload.serviceId,
               ticketDate,
               status: { in: ["WAITING", "CALLED"] },
-              id: { not: ticket.id },
-              priorityCategory: { weight: { gte: defaultPriority.weight } },
+              OR: [
+                // Higher priority — always ahead regardless of creation time
+                { priorityCategory: { weight: { gt: ticket.priorityWeight } } },
+                // Same priority — ahead only if issued before this ticket (FIFO)
+                {
+                  priorityCategory: { weight: { equals: ticket.priorityWeight } },
+                  sequenceNumber: { lt: ticket.sequenceNumber },
+                },
+              ],
             },
           });
 
