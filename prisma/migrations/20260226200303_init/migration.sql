@@ -256,8 +256,11 @@ CREATE INDEX "RoleAssignment_userId_idx" ON "RoleAssignment"("userId");
 -- CreateIndex
 CREATE INDEX "RoleAssignment_departmentId_idx" ON "RoleAssignment"("departmentId");
 
--- CreateIndex
-CREATE UNIQUE INDEX "RoleAssignment_userId_role_departmentId_key" ON "RoleAssignment"("userId", "role", "departmentId");
+-- CreateIndex: partial unique index for department-scoped roles (departmentId IS NOT NULL)
+CREATE UNIQUE INDEX "RoleAssignment_userId_role_dept_key" ON "RoleAssignment"("userId", "role", "departmentId") WHERE "departmentId" IS NOT NULL;
+
+-- CreateIndex: partial unique index for global roles (departmentId IS NULL)
+CREATE UNIQUE INDEX "RoleAssignment_userId_role_global_key" ON "RoleAssignment"("userId", "role") WHERE "departmentId" IS NULL;
 
 -- CreateIndex
 CREATE INDEX "PriorityCategory_hospitalId_idx" ON "PriorityCategory"("hospitalId");
