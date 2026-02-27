@@ -82,6 +82,12 @@ interface ParsedAdminConfigResetPayload {
   serviceId: string;
 }
 
+interface ParsedKioskIssueTicketPayload {
+  departmentId: string;
+  serviceId: string;
+  phoneNumber: string;
+}
+
 interface AppRequestContext {
   requestId: string;
   principal?: AuthenticatedPrincipal;
@@ -652,6 +658,39 @@ const parseAdminConfigResetPayload = (
   };
 };
 
+const parseKioskIssueTicketPayload = (
+  payload: JsonRecord
+): ParsedKioskIssueTicketPayload => {
+  const phoneNumber = requireString(payload, "phoneNumber");
+  const phoneDigitsOnly = phoneNumber.replace(/\D/g, "");
+  if (phoneDigitsOnly.length < 7 || phoneDigitsOnly.length > 15) {
+    throw new RequestValidationError(
+      "phoneNumber must be a valid phone number (7–15 digits)"
+    );
+  }
+
+  return {
+    departmentId: requireString(payload, "departmentId"),
+    serviceId: requireString(payload, "serviceId"),
+    phoneNumber: phoneDigitsOnly,
+  };
+};
+
+/**
+ * Returns the start-of-day bucket for the given timezone as a UTC Date.
+ * Uses the local calendar date in the target timezone, stored as midnight UTC
+ * so all tickets issued on the same local calendar day share the same bucket.
+ */
+const getTicketDateBucket = (timezone: string): Date => {
+  const localDateStr = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+  return new Date(localDateStr + "T00:00:00.000Z");
+};
+
 const getStringProperty = (
   value: unknown,
   key: string
@@ -831,6 +870,10 @@ const withPayload = async <TPayload>(
       return;
     }
 
+    console.error("[api] Unhandled internal error", {
+      requestId: context.requestId,
+      error: error instanceof Error ? { message: error.message, stack: error.stack } : String(error),
+    });
     internalServerError(response);
   }
 };
@@ -997,6 +1040,12 @@ export interface ApiSecurityConfig {
 
 export interface ApiRequestHandlerOptions {
   realtimeBroadcaster?: QueueRealtimeBroadcaster;
+  /**
+   * CORS allowed origins for HTTP API responses.
+   * Defaults to '*' in development (NODE_ENV !== 'production').
+   * In production, set CORS_ALLOWED_ORIGINS as a comma-separated list.
+   */
+  corsAllowedOrigins?: "*" | string[];
 }
 
 export type ApiRequestHandler = (
@@ -1013,12 +1062,46 @@ export const createApiRequestHandler = (
   const realtimeBroadcaster =
     options?.realtimeBroadcaster ?? new NoopQueueRealtimeBroadcaster();
 
+  const nodeEnv = (process.env.NODE_ENV ?? "").toLowerCase();
+  const corsAllowedOrigins =
+    options?.corsAllowedOrigins ??
+    (process.env.CORS_ALLOWED_ORIGINS
+      ? process.env.CORS_ALLOWED_ORIGINS.split(",").map((o) => o.trim()).filter(Boolean)
+      : nodeEnv === "production" ? [] : "*");
+
+  const applyCorsHeaders = (req: IncomingMessage, res: ServerResponse): void => {
+    const origin = getHeader(req, "origin") ?? "";
+    let allowOrigin: string;
+
+    if (corsAllowedOrigins === "*") {
+      allowOrigin = "*";
+    } else if (corsAllowedOrigins.includes(origin)) {
+      allowOrigin = origin;
+      res.setHeader("Vary", "Origin");
+    } else {
+      return; // Origin not allowed — don't set CORS headers
+    }
+
+    res.setHeader("Access-Control-Allow-Origin", allowOrigin);
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-Id");
+    res.setHeader("Access-Control-Max-Age", "86400");
+  };
+
   return async (request, response) => {
     const requestContext = createRequestContext(request);
     response.setHeader(REQUEST_ID_HEADER, requestContext.requestId);
+    applyCorsHeaders(request, response);
 
     const method = request.method ?? "";
     const path = request.url?.split("?")[0] ?? "";
+
+    // Handle CORS preflight
+    if (method === "OPTIONS") {
+      response.writeHead(204);
+      response.end();
+      return;
+    }
 
     if (method === "GET" && path === "/health") {
       json(response, 200, {
@@ -1026,6 +1109,222 @@ export const createApiRequestHandler = (
       });
       return;
     }
+
+    // ── Kiosk public endpoints (no auth required) ─────────────────────────────
+
+    if (method === "GET" && path === "/departments") {
+      try {
+        // Each instance serves one hospital; resolve it from any active department
+        const hospital = await prismaClient.hospital.findFirst({
+          where: { departments: { some: { isActive: true } } },
+          select: { id: true },
+        });
+
+        if (!hospital) {
+          json(response, 200, []);
+          return;
+        }
+
+        const departments = await prismaClient.department.findMany({
+          where: { hospitalId: hospital.id, isActive: true },
+          orderBy: { nameEn: "asc" },
+          select: { id: true, nameAr: true, nameEn: true },
+        });
+
+        json(response, 200, departments);
+      } catch {
+        internalServerError(response);
+      }
+      return;
+    }
+
+    const servicesPathMatch = path.match(/^\/departments\/([^/]+)\/services$/);
+    if (method === "GET" && servicesPathMatch) {
+      const departmentId = servicesPathMatch[1];
+      try {
+        const services = await prismaClient.service.findMany({
+          where: { departmentId, isActive: true },
+          orderBy: { nameEn: "asc" },
+          select: {
+            id: true,
+            nameAr: true,
+            nameEn: true,
+            ticketPrefix: true,
+            estimatedWaitMinutes: true,
+          },
+        });
+
+        json(response, 200, services);
+      } catch {
+        internalServerError(response);
+      }
+      return;
+    }
+
+    if (method === "POST" && path === "/tickets") {
+      await withPayload(
+        requestContext,
+        request,
+        response,
+        parseKioskIssueTicketPayload,
+        async (payload) => {
+          // 1. Resolve service → department → hospital
+          const service = await prismaClient.service.findFirst({
+            where: { id: payload.serviceId, isActive: true },
+            include: {
+              department: {
+                include: { hospital: { select: { id: true, timezone: true } } },
+              },
+            },
+          });
+
+          if (!service) {
+            return { status: 404, body: { code: "SERVICE_NOT_FOUND", message: "Service not found or inactive" } };
+          }
+
+          if (service.department.id !== payload.departmentId) {
+            return { status: 400, body: { code: "DEPARTMENT_SERVICE_MISMATCH", message: "Service does not belong to the given department" } };
+          }
+
+          const hospital = service.department.hospital;
+          const ticketDate = getTicketDateBucket(hospital.timezone);
+
+          // 2. Default priority (lowest weight = Normal)
+          const defaultPriority = await prismaClient.priorityCategory.findFirst({
+            where: { hospitalId: hospital.id },
+            orderBy: { weight: "asc" },
+            select: { id: true, weight: true },
+          });
+
+          if (!defaultPriority) {
+            return { status: 422, body: { code: "NO_PRIORITY_CONFIGURED", message: "No priority categories configured for this hospital" } };
+          }
+
+          // 3. Issue ticket atomically
+          type CreatedTicket = {
+            id: string;
+            ticketNumber: string;
+            serviceId: string;
+            departmentId: string;
+            phoneNumber: string;
+            createdAt: Date;
+          };
+
+          let ticket: CreatedTicket;
+          try {
+            ticket = await prismaClient.$transaction(async (tx) => {
+              // Duplicate active ticket guard
+              const existing = await tx.ticket.findFirst({
+                where: {
+                  serviceId: payload.serviceId,
+                  phoneNumber: payload.phoneNumber,
+                  status: { in: ["WAITING", "CALLED", "SERVING"] },
+                },
+                select: { id: true, ticketNumber: true },
+              });
+
+              if (existing) {
+                const err = new Error("Duplicate active ticket");
+                (err as NodeJS.ErrnoException).code = "DUPLICATE_ACTIVE_TICKET";
+                throw err;
+              }
+
+              // Next sequence number within this service+date bucket
+              const maxResult = await tx.ticket.aggregate({
+                where: { serviceId: payload.serviceId, ticketDate },
+                _max: { sequenceNumber: true },
+              });
+              const sequenceNumber = (maxResult._max.sequenceNumber ?? 0) + 1;
+              const ticketNumber = `${service.ticketPrefix}-${String(sequenceNumber).padStart(3, "0")}`;
+              const now = new Date();
+
+              const created = await tx.ticket.create({
+                data: {
+                  hospitalId: hospital.id,
+                  departmentId: payload.departmentId,
+                  serviceId: payload.serviceId,
+                  ticketDate,
+                  sequenceNumber,
+                  ticketNumber,
+                  phoneNumber: payload.phoneNumber,
+                  priorityCategoryId: defaultPriority.id,
+                  status: "WAITING",
+                  createdAt: now,
+                  updatedAt: now,
+                },
+                select: {
+                  id: true,
+                  ticketNumber: true,
+                  serviceId: true,
+                  departmentId: true,
+                  phoneNumber: true,
+                  createdAt: true,
+                },
+              });
+
+              await tx.ticketEvent.create({
+                data: {
+                  ticketId: created.id,
+                  eventType: "CREATED",
+                  actorType: "KIOSK",
+                  occurredAt: now,
+                },
+              });
+
+              return created;
+            });
+          } catch (error: unknown) {
+            const code =
+              (error as NodeJS.ErrnoException).code ||
+              (error as { code?: string }).code;
+            if (code === "DUPLICATE_ACTIVE_TICKET") {
+              return {
+                status: 409,
+                body: {
+                  code: "DUPLICATE_ACTIVE_TICKET",
+                  message: "An active ticket already exists for this phone number in this service",
+                },
+              };
+            }
+            throw error;
+          }
+
+          // 4. Queue snapshot — tickets ahead with equal or higher priority weight
+          const peopleAhead = await prismaClient.ticket.count({
+            where: {
+              serviceId: payload.serviceId,
+              ticketDate,
+              status: { in: ["WAITING", "CALLED"] },
+              id: { not: ticket.id },
+              priorityCategory: { weight: { gte: defaultPriority.weight } },
+            },
+          });
+
+          return {
+            status: 201,
+            body: {
+              ticket: {
+                id: ticket.id,
+                ticketNumber: ticket.ticketNumber,
+                serviceId: ticket.serviceId,
+                departmentId: ticket.departmentId,
+                phoneNumber: ticket.phoneNumber,
+              },
+              queueSnapshot: {
+                peopleAhead,
+                estimatedWaitMinutes: service.estimatedWaitMinutes ?? null,
+              },
+              // Phase 8: replace with real WhatsApp opt-in deep-link
+              whatsappOptInQrUrl: null,
+              issuedAt: ticket.createdAt.toISOString(),
+            },
+          };
+        }
+      );
+      return;
+    }
+
+    // ── End kiosk public endpoints ─────────────────────────────────────────────
 
     if (method === "POST" && path === "/auth/login") {
       await withPayload(
