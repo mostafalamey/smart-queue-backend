@@ -1071,11 +1071,14 @@ export const createApiRequestHandler = (
     options?.realtimeBroadcaster ?? new NoopQueueRealtimeBroadcaster();
 
   const nodeEnv = (process.env.NODE_ENV ?? "").toLowerCase();
-  const corsAllowedOrigins =
+  const rawCorsEnv = process.env.CORS_ALLOWED_ORIGINS?.trim();
+  const corsAllowedOrigins: "*" | string[] =
     options?.corsAllowedOrigins ??
-    (process.env.CORS_ALLOWED_ORIGINS
-      ? process.env.CORS_ALLOWED_ORIGINS.split(",").map((o) => o.trim()).filter(Boolean)
-      : nodeEnv === "production" ? [] : "*");
+    (rawCorsEnv === "*"
+      ? "*"
+      : rawCorsEnv
+        ? rawCorsEnv.split(",").map((o) => o.trim()).filter(Boolean)
+        : nodeEnv === "production" ? [] : "*");
 
   const applyCorsHeaders = (req: IncomingMessage, res: ServerResponse): void => {
     const origin = getHeader(req, "origin") ?? "";
