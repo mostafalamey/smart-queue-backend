@@ -723,6 +723,17 @@ const getTicketDateBucket = (timezone: string): Date => {
   return new Date(localDateStr + "T00:00:00.000Z");
 };
 
+/**
+ * Returns a privacy-masked version of a phone number.
+ * e.g. "0551234567" → "05****4567"
+ */
+const maskPhone = (phone: string): string => {
+  if (phone.length <= 6) return phone;
+  const first2 = phone.slice(0, 2);
+  const last4 = phone.slice(-4);
+  return first2 + "*".repeat(phone.length - 6) + last4;
+};
+
 const getStringProperty = (
   value: unknown,
   key: string
@@ -1421,6 +1432,182 @@ export const createApiRequestHandler = (
     }
 
     // ── End kiosk public endpoints ─────────────────────────────────────────────
+
+    // ── Queue read endpoints (STAFF / MANAGER / ADMIN — bearer auth required) ──
+
+    const queueSummaryPathMatch = path.match(
+      /^\/queue\/services\/([^/]+)\/summary$/
+    );
+    if (method === "GET" && queueSummaryPathMatch) {
+      const serviceId = queueSummaryPathMatch[1];
+      await withAuthorizedNoPayload(
+        requestContext,
+        request,
+        response,
+        securityConfig.jwtAccessTokenSecret,
+        { allowedRoles: TELLER_ROUTE_ALLOWED_ROLES },
+        async (principal, context) => {
+          // Resolve service → department → hospital (for timezone + validation).
+          const service = await prismaClient.service.findFirst({
+            where: { id: serviceId, isActive: true },
+            select: {
+              department: {
+                select: {
+                  hospital: { select: { id: true, timezone: true } },
+                },
+              },
+            },
+          });
+
+          if (!service) {
+            return {
+              status: 404,
+              body: { code: "SERVICE_NOT_FOUND", message: "Service not found or inactive" },
+            };
+          }
+
+          const ticketDate = getTicketDateBucket(
+            service.department.hospital.timezone
+          );
+
+          // Run all counts + now-serving lookup in parallel.
+          const [
+            waitingCount,
+            calledCount,
+            servingCount,
+            completedToday,
+            noShowsToday,
+            nowServingRow,
+          ] = await Promise.all([
+            prismaClient.ticket.count({
+              where: { serviceId, ticketDate, status: "WAITING" },
+            }),
+            prismaClient.ticket.count({
+              where: { serviceId, ticketDate, status: "CALLED" },
+            }),
+            prismaClient.ticket.count({
+              where: { serviceId, ticketDate, status: "SERVING" },
+            }),
+            prismaClient.ticket.count({
+              where: { serviceId, ticketDate, status: "COMPLETED" },
+            }),
+            prismaClient.ticket.count({
+              where: { serviceId, ticketDate, status: "NO_SHOW" },
+            }),
+            // nowServing is scoped to the requesting teller's station (from JWT).
+            principal.stationId
+              ? prismaClient.ticket.findFirst({
+                  where: {
+                    serviceId,
+                    calledCounterStationId: principal.stationId,
+                    status: { in: ["CALLED", "SERVING"] },
+                  },
+                  include: { priorityCategory: { select: { weight: true } } },
+                })
+              : Promise.resolve(null),
+          ]);
+
+          const nowServing = nowServingRow
+            ? {
+                id: nowServingRow.id,
+                ticketNumber: nowServingRow.ticketNumber,
+                status: nowServingRow.status as string,
+                serviceId: nowServingRow.serviceId,
+                stationId: nowServingRow.calledCounterStationId ?? undefined,
+                priorityWeight: nowServingRow.priorityCategory.weight,
+                calledAt: nowServingRow.calledAt?.toISOString() ?? undefined,
+                servingStartedAt:
+                  nowServingRow.servingStartedAt?.toISOString() ?? undefined,
+                completedAt:
+                  nowServingRow.completedAt?.toISOString() ?? undefined,
+                createdAt: nowServingRow.createdAt.toISOString(),
+                originTicketId: nowServingRow.originTicketId ?? undefined,
+                patientPhone: maskPhone(nowServingRow.phoneNumber),
+              }
+            : undefined;
+
+          return {
+            status: 200,
+            body: {
+              requestId: context.requestId,
+              serviceId,
+              waitingCount,
+              calledCount,
+              servingCount,
+              completedToday,
+              noShowsToday,
+              nowServing,
+            },
+          };
+        }
+      );
+      return;
+    }
+
+    const queueWaitingPathMatch = path.match(
+      /^\/queue\/services\/([^/]+)\/waiting$/
+    );
+    if (method === "GET" && queueWaitingPathMatch) {
+      const serviceId = queueWaitingPathMatch[1];
+      await withAuthorizedNoPayload(
+        requestContext,
+        request,
+        response,
+        securityConfig.jwtAccessTokenSecret,
+        { allowedRoles: TELLER_ROUTE_ALLOWED_ROLES },
+        async (_principal, context) => {
+          const service = await prismaClient.service.findFirst({
+            where: { id: serviceId, isActive: true },
+            select: {
+              department: {
+                select: {
+                  hospital: { select: { id: true, timezone: true } },
+                },
+              },
+            },
+          });
+
+          if (!service) {
+            return {
+              status: 404,
+              body: { code: "SERVICE_NOT_FOUND", message: "Service not found or inactive" },
+            };
+          }
+
+          const ticketDate = getTicketDateBucket(
+            service.department.hospital.timezone
+          );
+
+          const rows = await prismaClient.ticket.findMany({
+            where: { serviceId, ticketDate, status: "WAITING" },
+            orderBy: [
+              { priorityCategory: { weight: "desc" } },
+              { sequenceNumber: "asc" },
+            ],
+            include: { priorityCategory: { select: { weight: true } } },
+            take: 100,
+          });
+
+          const tickets = rows.map((row) => ({
+            id: row.id,
+            ticketNumber: row.ticketNumber,
+            priorityWeight: row.priorityCategory.weight,
+            createdAt: row.createdAt.toISOString(),
+          }));
+
+          return {
+            status: 200,
+            body: {
+              requestId: context.requestId,
+              tickets,
+            },
+          };
+        }
+      );
+      return;
+    }
+
+    // ── End queue read endpoints ────────────────────────────────────────────────
 
     if (method === "POST" && path === "/auth/login") {
       await withPayload(
