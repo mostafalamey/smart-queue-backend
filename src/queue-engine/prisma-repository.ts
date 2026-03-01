@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { Prisma, PrismaClient, TicketStatus } from "@prisma/client";
 import { QueueEngineError } from "./errors";
 import {
@@ -59,19 +60,20 @@ const toQueueTicket = (row: {
 type TransactionClient = Prisma.TransactionClient;
 
 export class PrismaQueueEngineRepository implements QueueEngineRepository {
-  private transactionClient: TransactionClient | null = null;
+  /**
+   * Uses AsyncLocalStorage instead of an instance field so that concurrent
+   * requests each carry their own transaction client in their async context.
+   * An instance field would be clobbered when two requests interleave at
+   * await points, causing sequence-number collisions and unique-constraint
+   * failures under concurrent load.
+   */
+  private readonly txStorage = new AsyncLocalStorage<TransactionClient>();
 
   constructor(private readonly prisma: PrismaClient) {}
 
   async runInTransaction<T>(work: () => Promise<T>): Promise<T> {
     return this.prisma.$transaction(async (tx) => {
-      const previousClient = this.transactionClient;
-      this.transactionClient = tx;
-      try {
-        return await work();
-      } finally {
-        this.transactionClient = previousClient;
-      }
+      return this.txStorage.run(tx, work);
     });
   }
 
@@ -433,7 +435,7 @@ export class PrismaQueueEngineRepository implements QueueEngineRepository {
   }
 
   private getClient(): PrismaClient | TransactionClient {
-    return this.transactionClient ?? this.prisma;
+    return this.txStorage.getStore() ?? this.prisma;
   }
 
   async lockServiceAndGenerateNextSequence(args: {
@@ -458,17 +460,19 @@ export class PrismaQueueEngineRepository implements QueueEngineRepository {
 
     const service = serviceRows[0];
 
-    const sequenceRows = await client.$queryRaw<
-      Array<{ maxSequenceNumber: number | bigint | string | null }>
-    >`
-      SELECT COALESCE(MAX("sequenceNumber"), 0) AS "maxSequenceNumber"
-      FROM "Ticket"
-      WHERE "serviceId" = ${args.serviceId}
-        AND "ticketDate" = ${args.ticketDate}
-    `;
+    // Use the ORM aggregate instead of $queryRaw so that the DateTime parameter
+    // is serialized through Prisma's type-safe driver binding, which avoids an
+    // implicit timestamptz→timestamp cast mismatch that causes raw-query
+    // comparisons to return 0 on non-UTC PostgreSQL sessions.
+    const aggregateResult = await client.ticket.aggregate({
+      _max: { sequenceNumber: true },
+      where: {
+        serviceId: args.serviceId,
+        ticketDate: args.ticketDate,
+      },
+    });
 
-    const maxSequenceRaw = sequenceRows[0]?.maxSequenceNumber ?? 0;
-    const maxSequence = Number(maxSequenceRaw);
+    const maxSequence = aggregateResult._max.sequenceNumber ?? 0;
     const sequenceNumber = maxSequence + 1;
     const ticketNumber = `${service.ticketPrefix}-${String(sequenceNumber).padStart(3, "0")}`;
 
