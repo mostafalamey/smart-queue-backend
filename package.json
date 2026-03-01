@@ -16,7 +16,8 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate deploy",
     "prisma:migrate:dev": "prisma migrate dev",
-    "seed": "npx jiti scripts/seed.ts"
+    "seed": "npx jiti scripts/seed.ts",
+    "seed:teller": "npx jiti scripts/seed-teller.ts"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.15",
