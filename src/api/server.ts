@@ -16,10 +16,12 @@ import {
   AuthTokenError,
   LoginError,
   RefreshError,
+  createArgon2idPasswordHash,
   loginWithPassword,
   logoutWithRefreshTokenSkeleton,
   refreshAuthTokens,
   verifyAccessToken,
+  verifyPasswordHashWithMetadata,
 } from "../auth";
 import {
   NoopQueueRealtimeBroadcaster,
@@ -56,6 +58,11 @@ interface ParsedLoginPayload {
   password: string;
   stationId?: string;
   requestedRole?: AppRole;
+}
+
+interface ParsedChangePasswordPayload {
+  currentPassword: string;
+  newPassword: string;
 }
 
 interface ParsedRefreshPayload {
@@ -621,6 +628,26 @@ const parseLogoutPayload = (payload: JsonRecord): ParsedLogoutPayload => {
   return {
     refreshToken: requireString(payload, "refreshToken"),
   };
+};
+
+const MIN_NEW_PASSWORD_LENGTH = 8;
+
+const parseChangePasswordPayload = (
+  payload: JsonRecord
+): ParsedChangePasswordPayload => {
+  const currentPassword = requireString(payload, "currentPassword");
+  const newPassword = requireString(payload, "newPassword");
+  if (newPassword.length < MIN_NEW_PASSWORD_LENGTH) {
+    throw new RequestValidationError(
+      `newPassword must be at least ${MIN_NEW_PASSWORD_LENGTH} characters`
+    );
+  }
+  if (newPassword === currentPassword) {
+    throw new RequestValidationError(
+      "newPassword must differ from currentPassword"
+    );
+  }
+  return { currentPassword, newPassword };
 };
 
 const parseAdminConfigTemplatePayload = (
@@ -1370,6 +1397,60 @@ export const createApiRequestHandler = (
               message:
                 "Logout accepted. Refresh-token revocation persistence is not yet enabled.",
             },
+          };
+        }
+      );
+      return;
+    }
+
+    if (method === "POST" && path === "/auth/change-password") {
+      await withAuthorizedPayload(
+        requestContext,
+        request,
+        response,
+        parseChangePasswordPayload,
+        securityConfig.jwtAccessTokenSecret,
+        { allowedRoles: new Set(Object.values(AppRole)) },
+        async (payload, principal) => {
+          const user = await prismaClient.user.findUnique({
+            where: { id: principal.userId },
+            select: { id: true, passwordHash: true, isActive: true },
+          });
+
+          if (!user || !user.isActive) {
+            throw new ForbiddenError("User not found or inactive");
+          }
+
+          const verification = await verifyPasswordHashWithMetadata(
+            payload.currentPassword,
+            user.passwordHash
+          );
+
+          if (!verification.isValid) {
+            return {
+              status: 400,
+              body: {
+                code: "INVALID_CREDENTIALS",
+                message: "Current password is incorrect",
+              },
+            };
+          }
+
+          const newHash = await createArgon2idPasswordHash(payload.newPassword);
+
+          await prismaClient.user.update({
+            where: { id: user.id },
+            data: {
+              passwordHash: newHash,
+              mustChangePassword: false,
+              failedLoginAttempts: 0,
+              lockedUntil: null,
+            },
+          });
+
+          return {
+            status: 200,
+            body: { success: true },
           };
         }
       );
