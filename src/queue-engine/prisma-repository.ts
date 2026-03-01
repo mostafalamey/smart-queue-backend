@@ -476,6 +476,13 @@ export class PrismaQueueEngineRepository implements QueueEngineRepository {
     const sequenceNumber = maxSequence + 1;
     const ticketNumber = `${service.ticketPrefix}-${String(sequenceNumber).padStart(3, "0")}`;
 
+    console.log("[DEBUG lockSeq]", {
+      serviceId: args.serviceId,
+      ticketDateISO: args.ticketDate.toISOString(),
+      maxSequenceFound: aggregateResult._max.sequenceNumber,
+      assignedSequence: sequenceNumber,
+    });
+
     return {
       sequenceNumber,
       ticketNumber,

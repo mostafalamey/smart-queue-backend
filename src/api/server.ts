@@ -1407,6 +1407,23 @@ export const createApiRequestHandler = (
             },
           });
 
+          // Notify teller dashboards about the new queue entry (fire-and-forget)
+          try {
+            realtimeBroadcaster.broadcastQueueUpdated({
+              requestId: requestContext.requestId,
+              operation: "kiosk.ticket-created",
+              ticketId: ticket.id,
+              serviceId: ticket.serviceId,
+              stationId: undefined,
+              occurredAt: new Date().toISOString(),
+            });
+          } catch (broadcastError: unknown) {
+            console.error("[realtime] Failed to broadcast kiosk ticket created", {
+              requestId: requestContext.requestId,
+              error: broadcastError,
+            });
+          }
+
           return {
             status: 201,
             body: {
