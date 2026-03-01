@@ -186,6 +186,59 @@ async function main() {
   }
   console.log(`[seed] Counter stations: ${stations.map((s) => s.counterCode).join(", ")}`);
 
+  // ── 7. Teller device mapping ──────────────────────────────────────────────────
+  // Device ID is the persistent UUID written to disk by the Electron app on first
+  // launch. Register it here and bind it to the General Clinic counter (G01) so
+  // the teller app can resolve its station before login.
+  const tellerDevice = await prisma.device.upsert({
+    where: { deviceId: "844a4bd0-f194-4574-8aa9-f4859d20bbda" },
+    update: {
+      assignedCounterStationId: "stn-seed-gen-1",
+      isActive: true,
+    },
+    create: {
+      hospitalId: hospital.id,
+      deviceId: "844a4bd0-f194-4574-8aa9-f4859d20bbda",
+      deviceType: "TELLER_PC",
+      displayName: "Dev Teller PC — G01",
+      assignedCounterStationId: "stn-seed-gen-1",
+      isActive: true,
+    },
+  });
+  console.log(`[seed] Teller device: ${tellerDevice.deviceId} → station G01 (General Clinic)`);
+
+  // ── 8. Staff (teller) user ────────────────────────────────────────────────────
+  const staffEmail = "teller@hospital.local";
+  const staffPassword = "Staff@SmartQueue1";
+  const staffPasswordHash = await createArgon2idPasswordHash(staffPassword);
+
+  const staffUser = await prisma.user.upsert({
+    where: { hospitalId_email: { hospitalId: hospital.id, email: staffEmail } },
+    update: {},
+    create: {
+      hospitalId: hospital.id,
+      email: staffEmail,
+      passwordHash: staffPasswordHash,
+      isActive: true,
+      mustChangePassword: true,
+    },
+  });
+
+  const existingStaffRole = await prisma.roleAssignment.findFirst({
+    where: { userId: staffUser.id, role: "STAFF" },
+  });
+  if (!existingStaffRole) {
+    await prisma.roleAssignment.create({
+      data: { userId: staffUser.id, role: "STAFF" },
+    });
+  }
+
+  if (printCredentials) {
+    console.log(`[seed] Staff user: ${staffEmail} / password: ${staffPassword}`);
+  } else {
+    console.log(`[seed] Staff user: ${staffEmail} / password: <redacted — set SEED_PRINT_CREDENTIALS=true to reveal>`);
+  }
+
   console.log("\n[seed] Done. Summary:");
   console.log(`  API base URL : http://localhost:3000`);
   console.log(`  GET /departments          → lists 3 departments`);

@@ -1148,6 +1148,103 @@ export const createApiRequestHandler = (
       return;
     }
 
+    // ── Teller device-binding resolution (public — no auth required) ─────────
+    // Called by the Teller Electron app on startup to resolve the local Device ID
+    // → CounterStation → Service chain before the user logs in.
+
+    if (method === "GET" && path === "/teller/station") {
+      const rawQuery = request.url?.includes("?")
+        ? request.url.split("?")[1]
+        : "";
+      const queryParams = new URLSearchParams(rawQuery);
+      const rawDeviceId = queryParams.get("deviceId");
+
+      if (!rawDeviceId || rawDeviceId.trim().length === 0) {
+        invalidRequest(response, "deviceId query parameter is required");
+        return;
+      }
+
+      try {
+        const device = await prismaClient.device.findUnique({
+          where: { deviceId: rawDeviceId.trim() },
+          select: {
+            isActive: true,
+            assignedCounterStationId: true,
+            counterStation: {
+              select: {
+                id: true,
+                counterCode: true,
+                isActive: true,
+                serviceId: true,
+                service: {
+                  select: {
+                    id: true,
+                    nameEn: true,
+                    nameAr: true,
+                    ticketPrefix: true,
+                    departmentId: true,
+                    isActive: true,
+                    department: {
+                      select: { id: true, nameEn: true, nameAr: true },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        });
+
+        if (!device) {
+          json(response, 404, {
+            code: "DEVICE_NOT_CONFIGURED",
+            message: "Device is not registered. Please ask IT to register this device in the Admin app.",
+          });
+          return;
+        }
+
+        if (!device.isActive) {
+          json(response, 404, {
+            code: "DEVICE_NOT_CONFIGURED",
+            message: "This device has been disabled. Please contact IT.",
+          });
+          return;
+        }
+
+        if (!device.counterStation) {
+          json(response, 404, {
+            code: "DEVICE_NOT_CONFIGURED",
+            message: "Device is not assigned to a station. Please ask IT to assign this device to a counter station.",
+          });
+          return;
+        }
+
+        const { counterStation: station } = device;
+
+        if (!station.isActive || !station.service.isActive) {
+          json(response, 404, {
+            code: "DEVICE_NOT_CONFIGURED",
+            message: "The counter station or its service is currently inactive. Please contact IT.",
+          });
+          return;
+        }
+
+        json(response, 200, {
+          stationId: station.id,
+          counterCode: station.counterCode,
+          serviceId: station.serviceId,
+          serviceNameEn: station.service.nameEn,
+          serviceNameAr: station.service.nameAr,
+          ticketPrefix: station.service.ticketPrefix,
+          departmentId: station.service.departmentId,
+          departmentNameEn: station.service.department.nameEn,
+          departmentNameAr: station.service.department.nameAr,
+        });
+      } catch {
+        internalServerError(response);
+      }
+      return;
+    }
+
     // ── Kiosk public endpoints (no auth required) ─────────────────────────────
 
     if (method === "GET" && path === "/departments") {
