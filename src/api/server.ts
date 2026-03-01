@@ -1165,7 +1165,7 @@ export const createApiRequestHandler = (
       }
 
       try {
-        const device = await prismaClient.device.findFirst({
+        const device = await prismaClient.device.findUnique({
           where: { deviceId: rawDeviceId.trim() },
           select: {
             isActive: true,
@@ -1194,12 +1194,26 @@ export const createApiRequestHandler = (
           },
         });
 
-        if (!device || !device.counterStation) {
+        if (!device) {
           json(response, 404, {
             code: "DEVICE_NOT_CONFIGURED",
-            message: !device
-              ? "Device is not registered. Please ask IT to register this device in the Admin app."
-              : "Device is not assigned to a station. Please ask IT to assign this device to a counter station.",
+            message: "Device is not registered. Please ask IT to register this device in the Admin app.",
+          });
+          return;
+        }
+
+        if (!device.isActive) {
+          json(response, 404, {
+            code: "DEVICE_NOT_CONFIGURED",
+            message: "This device has been disabled. Please contact IT.",
+          });
+          return;
+        }
+
+        if (!device.counterStation) {
+          json(response, 404, {
+            code: "DEVICE_NOT_CONFIGURED",
+            message: "Device is not assigned to a station. Please ask IT to assign this device to a counter station.",
           });
           return;
         }

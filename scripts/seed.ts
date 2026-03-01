@@ -220,7 +220,7 @@ async function main() {
       email: staffEmail,
       passwordHash: staffPasswordHash,
       isActive: true,
-      mustChangePassword: false,
+      mustChangePassword: true,
     },
   });
 
