@@ -410,7 +410,7 @@ export class QueueEngineService {
     ticketId: string;
     destination: TransferDestinationInput;
     actor: QueueActor;
-    reason?: TransferReasonSnapshot;
+    reason: TransferReasonSnapshot;
     now?: Date;
   }): Promise<TransferResult> {
     const timestamp = args.now ?? new Date();
@@ -425,9 +425,11 @@ export class QueueEngineService {
         destination: args.destination,
       });
 
-      const reasonPayload = args.reason
-        ? { reasonId: args.reason.id, reasonNameEn: args.reason.nameEn, reasonNameAr: args.reason.nameAr }
-        : undefined;
+      const reasonPayload = {
+        reasonId: args.reason.id,
+        reasonNameEn: args.reason.nameEn,
+        reasonNameAr: args.reason.nameAr,
+      };
 
       await this.repository.insertEvent({
         ticketId: sourceUpdated.id,

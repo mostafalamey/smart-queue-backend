@@ -46,7 +46,7 @@ interface ParsedTransferPayload extends ParsedTicketActionPayload {
     serviceId: string;
     ticketDate: Date;
   };
-  reasonId?: string;
+  reasonId: string;
 }
 
 interface ParsedChangePriorityPayload extends ParsedTicketActionPayload {
@@ -635,7 +635,7 @@ const parseTransferPayload = (payload: JsonRecord): ParsedTransferPayload => {
       serviceId: requireString(destinationPayload, "serviceId"),
       ticketDate,
     },
-    reasonId: optionalString(payload, "reasonId"),
+    reasonId: requireString(payload, "reasonId"),
   };
 };
 
@@ -2394,24 +2394,20 @@ export const createApiRequestHandler = (
         parseTransferPayload,
         securityConfig.jwtAccessTokenSecret,
         async (payload, actor) => {
-          // Resolve optional transfer reason into a denormalized snapshot
-          let reasonSnapshot: { id: string; nameEn: string; nameAr: string } | undefined;
-          if (payload.reasonId) {
-            const reason = await prismaClient.transferReason.findUnique({
-              where: { id: payload.reasonId },
-              select: { id: true, nameEn: true, nameAr: true, isActive: true },
-            });
-            if (!reason || !reason.isActive) {
-              return failure(400, "INVALID_TRANSFER_REASON", "Transfer reason not found or inactive");
-            }
-            reasonSnapshot = { id: reason.id, nameEn: reason.nameEn, nameAr: reason.nameAr };
+          // Resolve and validate the required transfer reason
+          const reason = await prismaClient.transferReason.findUnique({
+            where: { id: payload.reasonId },
+            select: { id: true, nameEn: true, nameAr: true, isActive: true },
+          });
+          if (!reason || !reason.isActive) {
+            return failure(400, "INVALID_TRANSFER_REASON", "Transfer reason not found or inactive");
           }
 
           const result = await tellerHandlers.transfer({
             ticketId: payload.ticketId,
             destination: payload.destination,
             actor,
-            reason: reasonSnapshot,
+            reason: { id: reason.id, nameEn: reason.nameEn, nameAr: reason.nameAr },
           });
 
           emitRealtimeForSuccessfulTellerMutation(realtimeBroadcaster, {

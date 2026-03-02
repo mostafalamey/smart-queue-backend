@@ -17,7 +17,7 @@ export interface TransferTicketRequest extends TicketActionRequest {
     serviceId: string;
     ticketDate: Date;
   };
-  reason?: TransferReasonSnapshot;
+  reason: TransferReasonSnapshot;
 }
 
 export interface ChangePriorityRequest extends TicketActionRequest {
