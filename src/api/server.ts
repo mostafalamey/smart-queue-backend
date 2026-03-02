@@ -4,7 +4,7 @@
 import { createServer, IncomingMessage, Server, ServerResponse } from "node:http";
 import { AppRole, PrismaClient, TemplateChannel } from "@prisma/client";
 import { createTellerApiHandlers } from "./teller";
-import { HttpResponse } from "./http";
+import { failure, HttpResponse } from "./http";
 import {
   createQueueEngineService,
   QueueEngineError,
@@ -46,11 +46,20 @@ interface ParsedTransferPayload extends ParsedTicketActionPayload {
     serviceId: string;
     ticketDate: Date;
   };
+  reasonId?: string;
 }
 
 interface ParsedChangePriorityPayload extends ParsedTicketActionPayload {
   priorityCategoryId: string;
   priorityWeight: number;
+}
+
+interface ParsedAdminTransferReasonPayload {
+  id?: string;
+  nameEn: string;
+  nameAr: string;
+  sortOrder: number;
+  isActive: boolean;
 }
 
 interface ParsedLoginPayload {
@@ -592,6 +601,7 @@ const parseTransferPayload = (payload: JsonRecord): ParsedTransferPayload => {
       serviceId: requireString(destinationPayload, "serviceId"),
       ticketDate,
     },
+    reasonId: optionalString(payload, "reasonId"),
   };
 };
 
@@ -604,6 +614,23 @@ const parseChangePriorityPayload = (
     ticketId: requireString(payload, "ticketId"),
     priorityCategoryId: requireString(payload, "priorityCategoryId"),
     priorityWeight,
+  };
+};
+
+const parseAdminTransferReasonPayload = (
+  payload: JsonRecord
+): ParsedAdminTransferReasonPayload => {
+  const isActive = payload.isActive;
+  if (typeof isActive !== "boolean") {
+    throw new RequestValidationError("isActive must be a boolean");
+  }
+
+  return {
+    id: optionalString(payload, "id"),
+    nameEn: requireString(payload, "nameEn"),
+    nameAr: requireString(payload, "nameAr"),
+    sortOrder: requireNumber(payload, "sortOrder"),
+    isActive,
   };
 };
 
@@ -2310,10 +2337,24 @@ export const createApiRequestHandler = (
         parseTransferPayload,
         securityConfig.jwtAccessTokenSecret,
         async (payload, actor) => {
+          // Resolve optional transfer reason into a denormalized snapshot
+          let reasonSnapshot: { id: string; nameEn: string; nameAr: string } | undefined;
+          if (payload.reasonId) {
+            const reason = await prismaClient.transferReason.findUnique({
+              where: { id: payload.reasonId },
+              select: { id: true, nameEn: true, nameAr: true, isActive: true },
+            });
+            if (!reason || !reason.isActive) {
+              return failure(400, "INVALID_TRANSFER_REASON", "Transfer reason not found or inactive");
+            }
+            reasonSnapshot = { id: reason.id, nameEn: reason.nameEn, nameAr: reason.nameAr };
+          }
+
           const result = await tellerHandlers.transfer({
             ticketId: payload.ticketId,
             destination: payload.destination,
             actor,
+            reason: reasonSnapshot,
           });
 
           emitRealtimeForSuccessfulTellerMutation(realtimeBroadcaster, {
@@ -2353,6 +2394,212 @@ export const createApiRequestHandler = (
           });
 
           return result;
+        }
+      );
+      return;
+    }
+
+    // ── Transfer reasons ──────────────────────────────────────────────────────
+
+    if (method === "GET" && path === "/transfer-reasons") {
+      await withAuthorizedNoPayload(
+        requestContext,
+        request,
+        response,
+        securityConfig.jwtAccessTokenSecret,
+        {
+          allowedRoles: TELLER_ROUTE_ALLOWED_ROLES,
+        },
+        async (principal, context) => {
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+          const reasons = await prismaClient.transferReason.findMany({
+            where: {
+              hospitalId: scope.hospitalId,
+              isActive: true,
+            },
+            orderBy: { sortOrder: "asc" },
+            select: {
+              id: true,
+              nameEn: true,
+              nameAr: true,
+              sortOrder: true,
+            },
+          });
+
+          return {
+            status: 200,
+            body: {
+              requestId: context.requestId,
+              reasons,
+            },
+          };
+        }
+      );
+      return;
+    }
+
+    if (method === "GET" && path === "/admin/transfer-reasons") {
+      await withAuthorizedNoPayload(
+        requestContext,
+        request,
+        response,
+        securityConfig.jwtAccessTokenSecret,
+        {
+          allowedRoles: ADMIN_CONFIG_SETTINGS_ALLOWED_ROLES,
+        },
+        async (principal, context) => {
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+          const reasons = await prismaClient.transferReason.findMany({
+            where: {
+              hospitalId: scope.hospitalId,
+            },
+            orderBy: { sortOrder: "asc" },
+            select: {
+              id: true,
+              nameEn: true,
+              nameAr: true,
+              sortOrder: true,
+              isActive: true,
+              createdAt: true,
+              updatedAt: true,
+            },
+          });
+
+          return {
+            status: 200,
+            body: {
+              requestId: context.requestId,
+              reasons,
+            },
+          };
+        }
+      );
+      return;
+    }
+
+    if (method === "POST" && path === "/admin/transfer-reasons") {
+      await withAuthorizedPayload(
+        requestContext,
+        request,
+        response,
+        parseAdminTransferReasonPayload,
+        securityConfig.jwtAccessTokenSecret,
+        {
+          allowedRoles: ADMIN_CONFIG_SETTINGS_ALLOWED_ROLES,
+        },
+        async (payload, principal, context) => {
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+
+          if (payload.id) {
+            // ── Update existing ────────────────────────────────────────────
+            const reason = await prismaClient.$transaction(async (tx) => {
+              const existing = await tx.transferReason.findUnique({
+                where: { id: payload.id },
+              });
+              if (!existing || existing.hospitalId !== scope.hospitalId) {
+                throw new RequestValidationError("Transfer reason not found");
+              }
+
+              const updated = await tx.transferReason.update({
+                where: { id: payload.id },
+                data: {
+                  nameEn: payload.nameEn,
+                  nameAr: payload.nameAr,
+                  sortOrder: payload.sortOrder,
+                  isActive: payload.isActive,
+                },
+                select: {
+                  id: true,
+                  nameEn: true,
+                  nameAr: true,
+                  sortOrder: true,
+                  isActive: true,
+                  createdAt: true,
+                  updatedAt: true,
+                },
+              });
+
+              await tx.auditLog.create({
+                data: {
+                  hospitalId: scope.hospitalId,
+                  actorUserId: scope.principal.userId,
+                  action: "TRANSFER_REASON_UPDATED",
+                  entityType: "TRANSFER_REASON",
+                  entityId: updated.id,
+                  before: {
+                    nameEn: existing.nameEn,
+                    nameAr: existing.nameAr,
+                    sortOrder: existing.sortOrder,
+                    isActive: existing.isActive,
+                  },
+                  after: {
+                    nameEn: updated.nameEn,
+                    nameAr: updated.nameAr,
+                    sortOrder: updated.sortOrder,
+                    isActive: updated.isActive,
+                  },
+                },
+              });
+
+              return updated;
+            });
+
+            return {
+              status: 200,
+              body: {
+                requestId: context.requestId,
+                reason,
+              },
+            };
+          }
+
+          // ── Create new ─────────────────────────────────────────────────
+          const reason = await prismaClient.$transaction(async (tx) => {
+            const created = await tx.transferReason.create({
+              data: {
+                hospitalId: scope.hospitalId,
+                nameEn: payload.nameEn,
+                nameAr: payload.nameAr,
+                sortOrder: payload.sortOrder,
+                isActive: payload.isActive,
+              },
+              select: {
+                id: true,
+                nameEn: true,
+                nameAr: true,
+                sortOrder: true,
+                isActive: true,
+                createdAt: true,
+                updatedAt: true,
+              },
+            });
+
+            await tx.auditLog.create({
+              data: {
+                hospitalId: scope.hospitalId,
+                actorUserId: scope.principal.userId,
+                action: "TRANSFER_REASON_CREATED",
+                entityType: "TRANSFER_REASON",
+                entityId: created.id,
+                after: {
+                  nameEn: created.nameEn,
+                  nameAr: created.nameAr,
+                  sortOrder: created.sortOrder,
+                  isActive: created.isActive,
+                },
+              },
+            });
+
+            return created;
+          });
+
+          return {
+            status: 201,
+            body: {
+              requestId: context.requestId,
+              reason,
+            },
+          };
         }
       );
       return;

@@ -68,6 +68,7 @@ model Hospital {
   devices            Device[]
   integrations       IntegrationConfig[]
   auditLogs          AuditLog[]
+  transferReasons    TransferReason[]
 }
 
 model Department {
@@ -355,4 +356,20 @@ model AuditLog {
 
   @@index([hospitalId, occurredAt])
   @@index([entityType, entityId])
+}
+
+model TransferReason {
+  id         String   @id @default(uuid())
+  hospitalId String
+  nameEn     String
+  nameAr     String
+  sortOrder  Int      @default(0)
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  hospital Hospital @relation(fields: [hospitalId], references: [id], onDelete: Cascade)
+
+  @@index([hospitalId, isActive, sortOrder])
+  @@unique([hospitalId, nameEn])
 }

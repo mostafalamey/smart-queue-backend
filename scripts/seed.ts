@@ -64,6 +64,24 @@ async function main() {
   }
   console.log("[seed] Priority categories: Normal, VIP, Emergency");
 
+  // ── 2b. Transfer reasons ─────────────────────────────────────────────────────
+  const transferReasons = [
+    { nameEn: "Wrong service",            nameAr: "خدمة خاطئة",        sortOrder: 1 },
+    { nameEn: "Additional tests required", nameAr: "فحوصات إضافية مطلوبة", sortOrder: 2 },
+    { nameEn: "Doctor referral",           nameAr: "تحويل طبيب",        sortOrder: 3 },
+    { nameEn: "Specialist consultation",   nameAr: "استشارة متخصص",     sortOrder: 4 },
+    { nameEn: "Other",                     nameAr: "أخرى",             sortOrder: 5 },
+  ];
+
+  for (const tr of transferReasons) {
+    await prisma.transferReason.upsert({
+      where: { hospitalId_nameEn: { hospitalId: hospital.id, nameEn: tr.nameEn } },
+      update: {},
+      create: { ...tr, hospitalId: hospital.id, isActive: true },
+    });
+  }
+  console.log(`[seed] Transfer reasons: ${transferReasons.map((r) => r.nameEn).join(", ")}`);
+
   // ── 3. Departments ───────────────────────────────────────────────────────────
   const depts = [
     { id: "dept-seed-general", nameAr: "الطب العام",  nameEn: "General Medicine" },

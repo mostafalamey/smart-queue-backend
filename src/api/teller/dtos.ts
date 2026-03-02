@@ -1,4 +1,4 @@
-import { QueueActor } from "../../queue-engine";
+import { QueueActor, TransferReasonSnapshot } from "../../queue-engine";
 
 export interface CallNextRequest {
   serviceId: string;
@@ -17,6 +17,7 @@ export interface TransferTicketRequest extends TicketActionRequest {
     serviceId: string;
     ticketDate: Date;
   };
+  reason?: TransferReasonSnapshot;
 }
 
 export interface ChangePriorityRequest extends TicketActionRequest {

@@ -122,6 +122,7 @@ export class TellerApiHandlers {
         ticketId: request.ticketId,
         destination: request.destination,
         actor: request.actor,
+        reason: request.reason,
       })
     );
   }
