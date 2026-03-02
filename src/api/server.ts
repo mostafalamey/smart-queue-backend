@@ -4,7 +4,7 @@
 import { createServer, IncomingMessage, Server, ServerResponse } from "node:http";
 import { AppRole, PrismaClient, TemplateChannel } from "@prisma/client";
 import { createTellerApiHandlers } from "./teller";
-import { HttpResponse } from "./http";
+import { failure, HttpResponse } from "./http";
 import {
   createQueueEngineService,
   QueueEngineError,
@@ -46,11 +46,26 @@ interface ParsedTransferPayload extends ParsedTicketActionPayload {
     serviceId: string;
     ticketDate: Date;
   };
+  reasonId: string;
 }
 
 interface ParsedChangePriorityPayload extends ParsedTicketActionPayload {
   priorityCategoryId: string;
   priorityWeight: number;
+}
+
+interface ParsedAdminTransferReasonPayload {
+  nameEn: string;
+  nameAr: string;
+  sortOrder: number;
+  isActive: boolean;
+}
+
+interface ParsedAdminTransferReasonPatchPayload {
+  nameEn?: string;
+  nameAr?: string;
+  sortOrder?: number;
+  isActive?: boolean;
 }
 
 interface ParsedLoginPayload {
@@ -148,6 +163,13 @@ class ForbiddenError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ForbiddenError";
+  }
+}
+
+class NotFoundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NotFoundError";
   }
 }
 
@@ -276,6 +298,13 @@ const unauthorized = (response: ServerResponse, message: string): void => {
 const forbidden = (response: ServerResponse, message: string): void => {
   json(response, 403, {
     code: "FORBIDDEN",
+    message,
+  });
+};
+
+const notFound = (response: ServerResponse, message: string): void => {
+  json(response, 404, {
+    code: "NOT_FOUND",
     message,
   });
 };
@@ -524,6 +553,50 @@ const requireNumber = (payload: JsonRecord, key: string): number => {
   return value;
 };
 
+const optionalNumber = (payload: JsonRecord, key: string): number | undefined => {
+  const value = payload[key];
+
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    throw new RequestValidationError(`${key} must be a valid number when provided`);
+  }
+
+  return value;
+};
+
+const requireNonNegativeInteger = (payload: JsonRecord, key: string): number => {
+  const value = requireNumber(payload, key);
+  if (!Number.isInteger(value) || value < 0) {
+    throw new RequestValidationError(`${key} must be a non-negative integer`);
+  }
+  return value;
+};
+
+const optionalNonNegativeInteger = (payload: JsonRecord, key: string): number | undefined => {
+  const value = optionalNumber(payload, key);
+  if (value !== undefined && (!Number.isInteger(value) || value < 0)) {
+    throw new RequestValidationError(`${key} must be a non-negative integer when provided`);
+  }
+  return value;
+};
+
+const optionalBoolean = (payload: JsonRecord, key: string): boolean | undefined => {
+  const value = payload[key];
+
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (typeof value !== "boolean") {
+    throw new RequestValidationError(`${key} must be a boolean when provided`);
+  }
+
+  return value;
+};
+
 const optionalString = (payload: JsonRecord, key: string): string | undefined => {
   const value = payload[key];
 
@@ -577,6 +650,13 @@ const parseTransferPayload = (payload: JsonRecord): ParsedTransferPayload => {
     throw new RequestValidationError("destination is required");
   }
 
+  const SERVER_OWNED_DESTINATION_FIELDS = ["sequenceNumber", "ticketNumber", "id", "createdAt", "updatedAt"];
+  for (const field of SERVER_OWNED_DESTINATION_FIELDS) {
+    if (field in destinationPayload) {
+      throw new RequestValidationError(`destination.${field} is server-managed and must not be supplied by the client`);
+    }
+  }
+
   const ticketDateRaw = requireString(destinationPayload, "ticketDate");
   const ticketDate = new Date(ticketDateRaw);
   if (Number.isNaN(ticketDate.getTime())) {
@@ -592,6 +672,7 @@ const parseTransferPayload = (payload: JsonRecord): ParsedTransferPayload => {
       serviceId: requireString(destinationPayload, "serviceId"),
       ticketDate,
     },
+    reasonId: requireString(payload, "reasonId"),
   };
 };
 
@@ -605,6 +686,46 @@ const parseChangePriorityPayload = (
     priorityCategoryId: requireString(payload, "priorityCategoryId"),
     priorityWeight,
   };
+};
+
+const parseAdminTransferReasonPayload = (
+  payload: JsonRecord
+): ParsedAdminTransferReasonPayload => {
+  const isActive = payload.isActive;
+  if (typeof isActive !== "boolean") {
+    throw new RequestValidationError("isActive must be a boolean");
+  }
+
+  return {
+    nameEn: requireString(payload, "nameEn"),
+    nameAr: requireString(payload, "nameAr"),
+    sortOrder: requireNonNegativeInteger(payload, "sortOrder"),
+    isActive,
+  };
+};
+
+const parseAdminTransferReasonPatchPayload = (
+  payload: JsonRecord
+): ParsedAdminTransferReasonPatchPayload => {
+  const result: ParsedAdminTransferReasonPatchPayload = {
+    nameEn: optionalString(payload, "nameEn"),
+    nameAr: optionalString(payload, "nameAr"),
+    sortOrder: optionalNonNegativeInteger(payload, "sortOrder"),
+    isActive: optionalBoolean(payload, "isActive"),
+  };
+
+  if (
+    result.nameEn === undefined &&
+    result.nameAr === undefined &&
+    result.sortOrder === undefined &&
+    result.isActive === undefined
+  ) {
+    throw new RequestValidationError(
+      "At least one field (nameEn, nameAr, sortOrder, isActive) must be provided"
+    );
+  }
+
+  return result;
 };
 
 const parseLoginPayload = (payload: JsonRecord): ParsedLoginPayload => {
@@ -884,6 +1005,11 @@ const withPayload = async <TPayload>(
       return;
     }
 
+    if (error instanceof NotFoundError) {
+      notFound(response, error.message);
+      return;
+    }
+
     if (error instanceof TooManyRequestsError) {
       tooManyRequests(response, error.message);
       return;
@@ -991,6 +1117,11 @@ const withAuthorizedNoPayload = async (
 
     if (error instanceof ForbiddenError) {
       forbidden(response, error.message);
+      return;
+    }
+
+    if (error instanceof NotFoundError) {
+      notFound(response, error.message);
       return;
     }
 
@@ -2310,10 +2441,29 @@ export const createApiRequestHandler = (
         parseTransferPayload,
         securityConfig.jwtAccessTokenSecret,
         async (payload, actor) => {
+          // Resolve the caller's hospital for tenant scoping
+          const callerUser = await prismaClient.user.findUnique({
+            where: { id: actor.actorUserId },
+            select: { hospitalId: true },
+          });
+          if (!callerUser) {
+            return failure(403, "FORBIDDEN", "Authenticated user not found");
+          }
+
+          // Resolve and validate the required transfer reason (scoped to caller's hospital)
+          const reason = await prismaClient.transferReason.findFirst({
+            where: { id: payload.reasonId, hospitalId: callerUser.hospitalId },
+            select: { id: true, nameEn: true, nameAr: true, isActive: true },
+          });
+          if (!reason || !reason.isActive) {
+            return failure(400, "INVALID_TRANSFER_REASON", "Transfer reason not found or inactive");
+          }
+
           const result = await tellerHandlers.transfer({
             ticketId: payload.ticketId,
             destination: payload.destination,
             actor,
+            reason: { id: reason.id, nameEn: reason.nameEn, nameAr: reason.nameAr },
           });
 
           emitRealtimeForSuccessfulTellerMutation(realtimeBroadcaster, {
@@ -2353,6 +2503,289 @@ export const createApiRequestHandler = (
           });
 
           return result;
+        }
+      );
+      return;
+    }
+
+    // ── Transfer reasons ──────────────────────────────────────────────────────
+
+    if (method === "GET" && path === "/transfer-reasons") {
+      await withAuthorizedNoPayload(
+        requestContext,
+        request,
+        response,
+        securityConfig.jwtAccessTokenSecret,
+        {
+          allowedRoles: TELLER_ROUTE_ALLOWED_ROLES,
+        },
+        async (principal, context) => {
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+          const reasons = await prismaClient.transferReason.findMany({
+            where: {
+              hospitalId: scope.hospitalId,
+              isActive: true,
+            },
+            orderBy: { sortOrder: "asc" },
+            select: {
+              id: true,
+              nameEn: true,
+              nameAr: true,
+              sortOrder: true,
+            },
+          });
+
+          return {
+            status: 200,
+            body: {
+              requestId: context.requestId,
+              reasons,
+            },
+          };
+        }
+      );
+      return;
+    }
+
+    if (method === "GET" && path === "/admin/transfer-reasons") {
+      await withAuthorizedNoPayload(
+        requestContext,
+        request,
+        response,
+        securityConfig.jwtAccessTokenSecret,
+        {
+          allowedRoles: ADMIN_CONFIG_SETTINGS_ALLOWED_ROLES,
+        },
+        async (principal, context) => {
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+          const reasons = await prismaClient.transferReason.findMany({
+            where: {
+              hospitalId: scope.hospitalId,
+            },
+            orderBy: { sortOrder: "asc" },
+            select: {
+              id: true,
+              nameEn: true,
+              nameAr: true,
+              sortOrder: true,
+              isActive: true,
+              createdAt: true,
+              updatedAt: true,
+            },
+          });
+
+          return {
+            status: 200,
+            body: {
+              requestId: context.requestId,
+              reasons,
+            },
+          };
+        }
+      );
+      return;
+    }
+
+    if (method === "POST" && path === "/admin/transfer-reasons") {
+      await withAuthorizedPayload(
+        requestContext,
+        request,
+        response,
+        parseAdminTransferReasonPayload,
+        securityConfig.jwtAccessTokenSecret,
+        {
+          allowedRoles: ADMIN_CONFIG_SETTINGS_ALLOWED_ROLES,
+        },
+        async (payload, principal, context) => {
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+
+          const reason = await prismaClient.$transaction(async (tx) => {
+            const created = await tx.transferReason.create({
+              data: {
+                hospitalId: scope.hospitalId,
+                nameEn: payload.nameEn,
+                nameAr: payload.nameAr,
+                sortOrder: payload.sortOrder,
+                isActive: payload.isActive,
+              },
+              select: {
+                id: true,
+                nameEn: true,
+                nameAr: true,
+                sortOrder: true,
+                isActive: true,
+                createdAt: true,
+                updatedAt: true,
+              },
+            });
+
+            await tx.auditLog.create({
+              data: {
+                hospitalId: scope.hospitalId,
+                actorUserId: scope.principal.userId,
+                action: "TRANSFER_REASON_CREATED",
+                entityType: "TRANSFER_REASON",
+                entityId: created.id,
+                after: {
+                  nameEn: created.nameEn,
+                  nameAr: created.nameAr,
+                  sortOrder: created.sortOrder,
+                  isActive: created.isActive,
+                },
+              },
+            });
+
+            return created;
+          });
+
+          return {
+            status: 201,
+            body: {
+              requestId: context.requestId,
+              reason,
+            },
+          };
+        }
+      );
+      return;
+    }
+
+    const adminTransferReasonPathMatch = path.match(
+      /^\/admin\/transfer-reasons\/([^/]+)$/
+    );
+
+    if (method === "PATCH" && adminTransferReasonPathMatch) {
+      const reasonId = adminTransferReasonPathMatch[1];
+      await withAuthorizedPayload(
+        requestContext,
+        request,
+        response,
+        parseAdminTransferReasonPatchPayload,
+        securityConfig.jwtAccessTokenSecret,
+        {
+          allowedRoles: ADMIN_CONFIG_SETTINGS_ALLOWED_ROLES,
+        },
+        async (payload, principal, context) => {
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+
+          const reason = await prismaClient.$transaction(async (tx) => {
+            const existing = await tx.transferReason.findUnique({
+              where: { id: reasonId },
+            });
+            if (!existing || existing.hospitalId !== scope.hospitalId) {
+              throw new NotFoundError("Transfer reason not found");
+            }
+
+            const data: Record<string, unknown> = {};
+            if (payload.nameEn !== undefined) data.nameEn = payload.nameEn;
+            if (payload.nameAr !== undefined) data.nameAr = payload.nameAr;
+            if (payload.sortOrder !== undefined) data.sortOrder = payload.sortOrder;
+            if (payload.isActive !== undefined) data.isActive = payload.isActive;
+
+            const updated = await tx.transferReason.update({
+              where: { id: reasonId },
+              data,
+              select: {
+                id: true,
+                nameEn: true,
+                nameAr: true,
+                sortOrder: true,
+                isActive: true,
+                createdAt: true,
+                updatedAt: true,
+              },
+            });
+
+            await tx.auditLog.create({
+              data: {
+                hospitalId: scope.hospitalId,
+                actorUserId: scope.principal.userId,
+                action: "TRANSFER_REASON_UPDATED",
+                entityType: "TRANSFER_REASON",
+                entityId: updated.id,
+                before: {
+                  nameEn: existing.nameEn,
+                  nameAr: existing.nameAr,
+                  sortOrder: existing.sortOrder,
+                  isActive: existing.isActive,
+                },
+                after: {
+                  nameEn: updated.nameEn,
+                  nameAr: updated.nameAr,
+                  sortOrder: updated.sortOrder,
+                  isActive: updated.isActive,
+                },
+              },
+            });
+
+            return updated;
+          });
+
+          return {
+            status: 200,
+            body: {
+              requestId: context.requestId,
+              reason,
+            },
+          };
+        }
+      );
+      return;
+    }
+
+    if (method === "DELETE" && adminTransferReasonPathMatch) {
+      const reasonId = adminTransferReasonPathMatch[1];
+      await withAuthorizedNoPayload(
+        requestContext,
+        request,
+        response,
+        securityConfig.jwtAccessTokenSecret,
+        {
+          allowedRoles: ADMIN_CONFIG_SETTINGS_ALLOWED_ROLES,
+        },
+        async (principal, context) => {
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+
+          await prismaClient.$transaction(async (tx) => {
+            const existing = await tx.transferReason.findUnique({
+              where: { id: reasonId },
+            });
+            if (!existing || existing.hospitalId !== scope.hospitalId) {
+              throw new NotFoundError("Transfer reason not found");
+            }
+
+            await tx.transferReason.update({
+              where: { id: reasonId },
+              data: { isActive: false },
+            });
+
+            await tx.auditLog.create({
+              data: {
+                hospitalId: scope.hospitalId,
+                actorUserId: scope.principal.userId,
+                action: "TRANSFER_REASON_DELETED",
+                entityType: "TRANSFER_REASON",
+                entityId: reasonId,
+                before: {
+                  nameEn: existing.nameEn,
+                  nameAr: existing.nameAr,
+                  sortOrder: existing.sortOrder,
+                  isActive: existing.isActive,
+                },
+                after: {
+                  isActive: false,
+                },
+              },
+            });
+          });
+
+          return {
+            status: 200,
+            body: {
+              requestId: context.requestId,
+              success: true,
+            },
+          };
         }
       );
       return;

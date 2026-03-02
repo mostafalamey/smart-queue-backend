@@ -22,6 +22,13 @@ export interface TransferDestinationInput {
   ticketDate: Date;
 }
 
+/** Denormalized snapshot of the transfer reason stored in event payloads. */
+export interface TransferReasonSnapshot {
+  id: string;
+  nameEn: string;
+  nameAr: string;
+}
+
 export interface CreateTicketInput {
   hospitalId: string;
   departmentId: string;
@@ -403,6 +410,7 @@ export class QueueEngineService {
     ticketId: string;
     destination: TransferDestinationInput;
     actor: QueueActor;
+    reason: TransferReasonSnapshot;
     now?: Date;
   }): Promise<TransferResult> {
     const timestamp = args.now ?? new Date();
@@ -417,6 +425,12 @@ export class QueueEngineService {
         destination: args.destination,
       });
 
+      const reasonPayload = {
+        reasonId: args.reason.id,
+        reasonNameEn: args.reason.nameEn,
+        reasonNameAr: args.reason.nameAr,
+      };
+
       await this.repository.insertEvent({
         ticketId: sourceUpdated.id,
         eventType: "TRANSFERRED_OUT",
@@ -428,6 +442,7 @@ export class QueueEngineService {
           destinationServiceId: destinationTicket.serviceId,
           destinationTicketId: destinationTicket.id,
           destinationTicketNumber: destinationTicket.ticketNumber,
+          ...reasonPayload,
         },
       });
 
@@ -442,6 +457,7 @@ export class QueueEngineService {
           sourceServiceId: sourceUpdated.serviceId,
           sourceTicketId: sourceUpdated.id,
           sourceTicketNumber: sourceUpdated.ticketNumber,
+          ...reasonPayload,
         },
       });
 

@@ -209,12 +209,26 @@ Administrative audit trail.
 - Staff must have exactly one department scope.
 - One service per counter station.
 
+### TransferReason
+Hospital-scoped configurable transfer reason (dropdown for tellers).
+- `id` (uuid)
+- `hospitalId` (fk)
+- `nameAr`
+- `nameEn`
+- `sortOrder` (int, default 0)
+- `isActive` (default true)
+- `createdAt`, `updatedAt`
+
+Seeded with defaults: Wrong service, Additional tests required, Doctor referral, Specialist consultation needed, Other.
+
 ## Transfer Model
 Transfer creates a new destination ticket and links back:
 - Source ticket marked `TRANSFERRED_OUT`.
 - Destination ticket references `originTicketId`.
 - Destination ticket gets new sequence and ticket number for destination service/date bucket.
 - Priority preserved by default.
+- Teller must select a `TransferReason` when transferring; the `reasonId` + denormalized `reasonNameEn`/`reasonNameAr` are recorded in the `TRANSFERRED_OUT` and `TRANSFERRED_IN` event payloads for audit/analytics.
+- Transfer reasons are managed by Admin via the Admin app (CRUD + ordering + soft-deactivation).
 
 ## Open Design Notes for Phase 2
 - Ticket lock timeout duration.
