@@ -166,6 +166,13 @@ class ForbiddenError extends Error {
   }
 }
 
+class NotFoundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NotFoundError";
+  }
+}
+
 class TooManyRequestsError extends Error {
   constructor(message: string) {
     super(message);
@@ -291,6 +298,13 @@ const unauthorized = (response: ServerResponse, message: string): void => {
 const forbidden = (response: ServerResponse, message: string): void => {
   json(response, 403, {
     code: "FORBIDDEN",
+    message,
+  });
+};
+
+const notFound = (response: ServerResponse, message: string): void => {
+  json(response, 404, {
+    code: "NOT_FOUND",
     message,
   });
 };
@@ -553,6 +567,22 @@ const optionalNumber = (payload: JsonRecord, key: string): number | undefined =>
   return value;
 };
 
+const requireNonNegativeInteger = (payload: JsonRecord, key: string): number => {
+  const value = requireNumber(payload, key);
+  if (!Number.isInteger(value) || value < 0) {
+    throw new RequestValidationError(`${key} must be a non-negative integer`);
+  }
+  return value;
+};
+
+const optionalNonNegativeInteger = (payload: JsonRecord, key: string): number | undefined => {
+  const value = optionalNumber(payload, key);
+  if (value !== undefined && (!Number.isInteger(value) || value < 0)) {
+    throw new RequestValidationError(`${key} must be a non-negative integer when provided`);
+  }
+  return value;
+};
+
 const optionalBoolean = (payload: JsonRecord, key: string): boolean | undefined => {
   const value = payload[key];
 
@@ -620,6 +650,13 @@ const parseTransferPayload = (payload: JsonRecord): ParsedTransferPayload => {
     throw new RequestValidationError("destination is required");
   }
 
+  const SERVER_OWNED_DESTINATION_FIELDS = ["sequenceNumber", "ticketNumber", "id", "createdAt", "updatedAt"];
+  for (const field of SERVER_OWNED_DESTINATION_FIELDS) {
+    if (field in destinationPayload) {
+      throw new RequestValidationError(`destination.${field} is server-managed and must not be supplied by the client`);
+    }
+  }
+
   const ticketDateRaw = requireString(destinationPayload, "ticketDate");
   const ticketDate = new Date(ticketDateRaw);
   if (Number.isNaN(ticketDate.getTime())) {
@@ -662,7 +699,7 @@ const parseAdminTransferReasonPayload = (
   return {
     nameEn: requireString(payload, "nameEn"),
     nameAr: requireString(payload, "nameAr"),
-    sortOrder: requireNumber(payload, "sortOrder"),
+    sortOrder: requireNonNegativeInteger(payload, "sortOrder"),
     isActive,
   };
 };
@@ -673,7 +710,7 @@ const parseAdminTransferReasonPatchPayload = (
   const result: ParsedAdminTransferReasonPatchPayload = {
     nameEn: optionalString(payload, "nameEn"),
     nameAr: optionalString(payload, "nameAr"),
-    sortOrder: optionalNumber(payload, "sortOrder"),
+    sortOrder: optionalNonNegativeInteger(payload, "sortOrder"),
     isActive: optionalBoolean(payload, "isActive"),
   };
 
@@ -968,6 +1005,11 @@ const withPayload = async <TPayload>(
       return;
     }
 
+    if (error instanceof NotFoundError) {
+      notFound(response, error.message);
+      return;
+    }
+
     if (error instanceof TooManyRequestsError) {
       tooManyRequests(response, error.message);
       return;
@@ -1075,6 +1117,11 @@ const withAuthorizedNoPayload = async (
 
     if (error instanceof ForbiddenError) {
       forbidden(response, error.message);
+      return;
+    }
+
+    if (error instanceof NotFoundError) {
+      notFound(response, error.message);
       return;
     }
 
@@ -2394,9 +2441,18 @@ export const createApiRequestHandler = (
         parseTransferPayload,
         securityConfig.jwtAccessTokenSecret,
         async (payload, actor) => {
-          // Resolve and validate the required transfer reason
-          const reason = await prismaClient.transferReason.findUnique({
-            where: { id: payload.reasonId },
+          // Resolve the caller's hospital for tenant scoping
+          const callerUser = await prismaClient.user.findUnique({
+            where: { id: actor.actorUserId },
+            select: { hospitalId: true },
+          });
+          if (!callerUser) {
+            return failure(403, "FORBIDDEN", "Authenticated user not found");
+          }
+
+          // Resolve and validate the required transfer reason (scoped to caller's hospital)
+          const reason = await prismaClient.transferReason.findFirst({
+            where: { id: payload.reasonId, hospitalId: callerUser.hospitalId },
             select: { id: true, nameEn: true, nameAr: true, isActive: true },
           });
           if (!reason || !reason.isActive) {
@@ -2617,7 +2673,7 @@ export const createApiRequestHandler = (
               where: { id: reasonId },
             });
             if (!existing || existing.hospitalId !== scope.hospitalId) {
-              throw new RequestValidationError("Transfer reason not found");
+              throw new NotFoundError("Transfer reason not found");
             }
 
             const data: Record<string, unknown> = {};
@@ -2695,7 +2751,7 @@ export const createApiRequestHandler = (
               where: { id: reasonId },
             });
             if (!existing || existing.hospitalId !== scope.hospitalId) {
-              throw new RequestValidationError("Transfer reason not found");
+              throw new NotFoundError("Transfer reason not found");
             }
 
             await tx.transferReason.update({
