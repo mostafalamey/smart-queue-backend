@@ -55,11 +55,17 @@ interface ParsedChangePriorityPayload extends ParsedTicketActionPayload {
 }
 
 interface ParsedAdminTransferReasonPayload {
-  id?: string;
   nameEn: string;
   nameAr: string;
   sortOrder: number;
   isActive: boolean;
+}
+
+interface ParsedAdminTransferReasonPatchPayload {
+  nameEn?: string;
+  nameAr?: string;
+  sortOrder?: number;
+  isActive?: boolean;
 }
 
 interface ParsedLoginPayload {
@@ -533,6 +539,34 @@ const requireNumber = (payload: JsonRecord, key: string): number => {
   return value;
 };
 
+const optionalNumber = (payload: JsonRecord, key: string): number | undefined => {
+  const value = payload[key];
+
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    throw new RequestValidationError(`${key} must be a valid number when provided`);
+  }
+
+  return value;
+};
+
+const optionalBoolean = (payload: JsonRecord, key: string): boolean | undefined => {
+  const value = payload[key];
+
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (typeof value !== "boolean") {
+    throw new RequestValidationError(`${key} must be a boolean when provided`);
+  }
+
+  return value;
+};
+
 const optionalString = (payload: JsonRecord, key: string): string | undefined => {
   const value = payload[key];
 
@@ -626,12 +660,35 @@ const parseAdminTransferReasonPayload = (
   }
 
   return {
-    id: optionalString(payload, "id"),
     nameEn: requireString(payload, "nameEn"),
     nameAr: requireString(payload, "nameAr"),
     sortOrder: requireNumber(payload, "sortOrder"),
     isActive,
   };
+};
+
+const parseAdminTransferReasonPatchPayload = (
+  payload: JsonRecord
+): ParsedAdminTransferReasonPatchPayload => {
+  const result: ParsedAdminTransferReasonPatchPayload = {
+    nameEn: optionalString(payload, "nameEn"),
+    nameAr: optionalString(payload, "nameAr"),
+    sortOrder: optionalNumber(payload, "sortOrder"),
+    isActive: optionalBoolean(payload, "isActive"),
+  };
+
+  if (
+    result.nameEn === undefined &&
+    result.nameAr === undefined &&
+    result.sortOrder === undefined &&
+    result.isActive === undefined
+  ) {
+    throw new RequestValidationError(
+      "At least one field (nameEn, nameAr, sortOrder, isActive) must be provided"
+    );
+  }
+
+  return result;
 };
 
 const parseLoginPayload = (payload: JsonRecord): ParsedLoginPayload => {
@@ -2490,70 +2547,6 @@ export const createApiRequestHandler = (
         async (payload, principal, context) => {
           const scope = await resolvePrincipalAccessScope(prismaClient, principal);
 
-          if (payload.id) {
-            // ── Update existing ────────────────────────────────────────────
-            const reason = await prismaClient.$transaction(async (tx) => {
-              const existing = await tx.transferReason.findUnique({
-                where: { id: payload.id },
-              });
-              if (!existing || existing.hospitalId !== scope.hospitalId) {
-                throw new RequestValidationError("Transfer reason not found");
-              }
-
-              const updated = await tx.transferReason.update({
-                where: { id: payload.id },
-                data: {
-                  nameEn: payload.nameEn,
-                  nameAr: payload.nameAr,
-                  sortOrder: payload.sortOrder,
-                  isActive: payload.isActive,
-                },
-                select: {
-                  id: true,
-                  nameEn: true,
-                  nameAr: true,
-                  sortOrder: true,
-                  isActive: true,
-                  createdAt: true,
-                  updatedAt: true,
-                },
-              });
-
-              await tx.auditLog.create({
-                data: {
-                  hospitalId: scope.hospitalId,
-                  actorUserId: scope.principal.userId,
-                  action: "TRANSFER_REASON_UPDATED",
-                  entityType: "TRANSFER_REASON",
-                  entityId: updated.id,
-                  before: {
-                    nameEn: existing.nameEn,
-                    nameAr: existing.nameAr,
-                    sortOrder: existing.sortOrder,
-                    isActive: existing.isActive,
-                  },
-                  after: {
-                    nameEn: updated.nameEn,
-                    nameAr: updated.nameAr,
-                    sortOrder: updated.sortOrder,
-                    isActive: updated.isActive,
-                  },
-                },
-              });
-
-              return updated;
-            });
-
-            return {
-              status: 200,
-              body: {
-                requestId: context.requestId,
-                reason,
-              },
-            };
-          }
-
-          // ── Create new ─────────────────────────────────────────────────
           const reason = await prismaClient.$transaction(async (tx) => {
             const created = await tx.transferReason.create({
               data: {
@@ -2598,6 +2591,147 @@ export const createApiRequestHandler = (
             body: {
               requestId: context.requestId,
               reason,
+            },
+          };
+        }
+      );
+      return;
+    }
+
+    const adminTransferReasonPathMatch = path.match(
+      /^\/admin\/transfer-reasons\/([^/]+)$/
+    );
+
+    if (method === "PATCH" && adminTransferReasonPathMatch) {
+      const reasonId = adminTransferReasonPathMatch[1];
+      await withAuthorizedPayload(
+        requestContext,
+        request,
+        response,
+        parseAdminTransferReasonPatchPayload,
+        securityConfig.jwtAccessTokenSecret,
+        {
+          allowedRoles: ADMIN_CONFIG_SETTINGS_ALLOWED_ROLES,
+        },
+        async (payload, principal, context) => {
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+
+          const reason = await prismaClient.$transaction(async (tx) => {
+            const existing = await tx.transferReason.findUnique({
+              where: { id: reasonId },
+            });
+            if (!existing || existing.hospitalId !== scope.hospitalId) {
+              throw new RequestValidationError("Transfer reason not found");
+            }
+
+            const data: Record<string, unknown> = {};
+            if (payload.nameEn !== undefined) data.nameEn = payload.nameEn;
+            if (payload.nameAr !== undefined) data.nameAr = payload.nameAr;
+            if (payload.sortOrder !== undefined) data.sortOrder = payload.sortOrder;
+            if (payload.isActive !== undefined) data.isActive = payload.isActive;
+
+            const updated = await tx.transferReason.update({
+              where: { id: reasonId },
+              data,
+              select: {
+                id: true,
+                nameEn: true,
+                nameAr: true,
+                sortOrder: true,
+                isActive: true,
+                createdAt: true,
+                updatedAt: true,
+              },
+            });
+
+            await tx.auditLog.create({
+              data: {
+                hospitalId: scope.hospitalId,
+                actorUserId: scope.principal.userId,
+                action: "TRANSFER_REASON_UPDATED",
+                entityType: "TRANSFER_REASON",
+                entityId: updated.id,
+                before: {
+                  nameEn: existing.nameEn,
+                  nameAr: existing.nameAr,
+                  sortOrder: existing.sortOrder,
+                  isActive: existing.isActive,
+                },
+                after: {
+                  nameEn: updated.nameEn,
+                  nameAr: updated.nameAr,
+                  sortOrder: updated.sortOrder,
+                  isActive: updated.isActive,
+                },
+              },
+            });
+
+            return updated;
+          });
+
+          return {
+            status: 200,
+            body: {
+              requestId: context.requestId,
+              reason,
+            },
+          };
+        }
+      );
+      return;
+    }
+
+    if (method === "DELETE" && adminTransferReasonPathMatch) {
+      const reasonId = adminTransferReasonPathMatch[1];
+      await withAuthorizedNoPayload(
+        requestContext,
+        request,
+        response,
+        securityConfig.jwtAccessTokenSecret,
+        {
+          allowedRoles: ADMIN_CONFIG_SETTINGS_ALLOWED_ROLES,
+        },
+        async (principal, context) => {
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+
+          await prismaClient.$transaction(async (tx) => {
+            const existing = await tx.transferReason.findUnique({
+              where: { id: reasonId },
+            });
+            if (!existing || existing.hospitalId !== scope.hospitalId) {
+              throw new RequestValidationError("Transfer reason not found");
+            }
+
+            await tx.transferReason.update({
+              where: { id: reasonId },
+              data: { isActive: false },
+            });
+
+            await tx.auditLog.create({
+              data: {
+                hospitalId: scope.hospitalId,
+                actorUserId: scope.principal.userId,
+                action: "TRANSFER_REASON_DELETED",
+                entityType: "TRANSFER_REASON",
+                entityId: reasonId,
+                before: {
+                  nameEn: existing.nameEn,
+                  nameAr: existing.nameAr,
+                  sortOrder: existing.sortOrder,
+                  isActive: existing.isActive,
+                },
+                after: {
+                  isActive: false,
+                },
+              },
+            });
+          });
+
+          return {
+            status: 200,
+            body: {
+              requestId: context.requestId,
+              success: true,
             },
           };
         }

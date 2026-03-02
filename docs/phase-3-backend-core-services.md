@@ -57,7 +57,7 @@ Deliver production-ready backend foundations for API runtime, auth, realtime, jo
 - Runtime env contract now requires `REDIS_URL` in `src/runtime/env.ts` and includes baseline Redis config in `.env.example`.
 - Added RBAC-protected admin configuration API stubs in `src/api/server.ts` for templates, mapping, retention, and service-counter reset surfaces.
 - Replaced admin configuration stubs with persistence-backed handlers in `src/api/server.ts` using `MessageTemplate`, `Device` mapping updates, and `AuditLog` persistence for retention and reset requests.
-- Added `TransferReason` CRUD endpoints: `GET /transfer-reasons` (Staff+ — active reasons for teller dropdown), `GET/POST/PATCH/DELETE /admin/transfer-reasons` (Admin — full CRUD including inactive reasons).
+- Added `TransferReason` CRUD endpoints: `GET /transfer-reasons` (Staff+ — active reasons for teller dropdown), `GET /admin/transfer-reasons` (Admin — list all including inactive), `POST /admin/transfer-reasons` (Admin — create), `PATCH /admin/transfer-reasons/:id` (Admin — partial update), `DELETE /admin/transfer-reasons/:id` (Admin — soft-delete).
 - Transfer endpoint (`POST /teller/transfer`) extended to accept optional `reasonId` — validated against active reasons; denormalized `{ reasonId, reasonNameEn, reasonNameAr }` recorded in `TRANSFERRED_OUT` and `TRANSFERRED_IN` event payloads.
 
 ## Next Slice (Immediate)
