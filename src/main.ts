@@ -49,6 +49,15 @@ export const bootstrap = async (): Promise<RuntimeHandle> => {
   const app = await NestFactory.create(AppModule.register(requestHandler), {
     bodyParser: false,
   });
+  // Enable CORS for browser-based clients (admin app, signage, PWA).
+  // Uses the same origin whitelist as the realtime socket server.
+  // In development (no REALTIME_CORS_ALLOWED_ORIGINS set) this defaults to '*'.
+  app.enableCors({
+    origin: env.realtimeCorsAllowedOrigins,
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  });
   attachRealtimeSocketServer(realtimeSocketServer, app.getHttpServer());
 
   let prismaConnected = false;
