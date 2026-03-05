@@ -142,6 +142,7 @@ model User {
   id                  String   @id @default(uuid())
   hospitalId          String
   email               String
+  name                String?
   passwordHash        String
   isActive            Boolean  @default(true)
   mustChangePassword  Boolean  @default(false)
