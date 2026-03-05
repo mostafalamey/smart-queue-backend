@@ -17,6 +17,7 @@ export interface RefreshResult {
   user: {
     id: string;
     email: string;
+    name: string | null;
     role: AppRole;
     departmentId?: string;
     mustChangePassword: boolean;
@@ -164,6 +165,7 @@ export const refreshAuthTokens = async (
     user: {
       id: user.id,
       email: user.email,
+      name: user.name,
       role: roleAssignment.role,
       departmentId: roleAssignment.departmentId ?? undefined,
       mustChangePassword: user.mustChangePassword,

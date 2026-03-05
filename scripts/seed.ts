@@ -160,10 +160,11 @@ async function main() {
 
   const adminUser = await prisma.user.upsert({
     where: { hospitalId_email: { hospitalId: hospital.id, email: adminEmail } },
-    update: {},
+    update: { name: "System Administrator" },
     create: {
       hospitalId: hospital.id,
       email: adminEmail,
+      name: "System Administrator",
       passwordHash,
       isActive: true,
       mustChangePassword: true,
@@ -232,10 +233,11 @@ async function main() {
 
   const staffUser = await prisma.user.upsert({
     where: { hospitalId_email: { hospitalId: hospital.id, email: staffEmail } },
-    update: {},
+    update: { name: "Ahmad Al-Teller" },
     create: {
       hospitalId: hospital.id,
       email: staffEmail,
+      name: "Ahmad Al-Teller",
       passwordHash: staffPasswordHash,
       isActive: true,
       mustChangePassword: true,
@@ -255,6 +257,72 @@ async function main() {
     console.log(`[seed] Staff user: ${staffEmail} / password: ${staffPassword}`);
   } else {
     console.log(`[seed] Staff user: ${staffEmail} / password: <redacted — set SEED_PRINT_CREDENTIALS=true to reveal>`);
+  }
+
+  // ── 9. IT user ────────────────────────────────────────────────────────────────
+  const itEmail = "it@hospital.local";
+  const itPassword = "IT@SmartQueue1";
+  const itPasswordHash = await createArgon2idPasswordHash(itPassword);
+
+  const itUser = await prisma.user.upsert({
+    where: { hospitalId_email: { hospitalId: hospital.id, email: itEmail } },
+    update: { name: "Khalid IT Support" },
+    create: {
+      hospitalId: hospital.id,
+      email: itEmail,
+      name: "Khalid IT Support",
+      passwordHash: itPasswordHash,
+      isActive: true,
+      mustChangePassword: true,
+    },
+  });
+
+  const existingItRole = await prisma.roleAssignment.findFirst({
+    where: { userId: itUser.id, role: "IT", departmentId: null },
+  });
+  if (!existingItRole) {
+    await prisma.roleAssignment.create({
+      data: { userId: itUser.id, role: "IT" },
+    });
+  }
+
+  if (printCredentials) {
+    console.log(`[seed] IT user: ${itEmail} / password: ${itPassword}`);
+  } else {
+    console.log(`[seed] IT user: ${itEmail} / password: <redacted — set SEED_PRINT_CREDENTIALS=true to reveal>`);
+  }
+
+  // ── 10. Manager user (scoped to General Medicine) ─────────────────────────────
+  const mgrEmail = "manager@hospital.local";
+  const mgrPassword = "Manager@SmartQueue1";
+  const mgrPasswordHash = await createArgon2idPasswordHash(mgrPassword);
+
+  const mgrUser = await prisma.user.upsert({
+    where: { hospitalId_email: { hospitalId: hospital.id, email: mgrEmail } },
+    update: { name: "Dr. Fatima Al-Manager" },
+    create: {
+      hospitalId: hospital.id,
+      email: mgrEmail,
+      name: "Dr. Fatima Al-Manager",
+      passwordHash: mgrPasswordHash,
+      isActive: true,
+      mustChangePassword: true,
+    },
+  });
+
+  const existingMgrRole = await prisma.roleAssignment.findFirst({
+    where: { userId: mgrUser.id, role: "MANAGER" },
+  });
+  if (!existingMgrRole) {
+    await prisma.roleAssignment.create({
+      data: { userId: mgrUser.id, role: "MANAGER", departmentId: "dept-seed-general" },
+    });
+  }
+
+  if (printCredentials) {
+    console.log(`[seed] Manager user: ${mgrEmail} / password: ${mgrPassword} (General Medicine)`);
+  } else {
+    console.log(`[seed] Manager user: ${mgrEmail} / password: <redacted> (General Medicine)`);
   }
 
   console.log("\n[seed] Done. Summary:");

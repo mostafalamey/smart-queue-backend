@@ -78,6 +78,7 @@ interface ParsedLoginPayload {
 interface ParsedChangePasswordPayload {
   currentPassword: string;
   newPassword: string;
+  name?: string;
 }
 
 interface ParsedRefreshPayload {
@@ -768,7 +769,7 @@ const parseChangePasswordPayload = (
       "newPassword must differ from currentPassword"
     );
   }
-  return { currentPassword, newPassword };
+  return { currentPassword, newPassword, name: optionalString(payload, "name") };
 };
 
 const parseAdminConfigTemplatePayload = (
@@ -1877,6 +1878,7 @@ export const createApiRequestHandler = (
               mustChangePassword: false,
               failedLoginAttempts: 0,
               lockedUntil: null,
+              ...(payload.name !== undefined && { name: payload.name }),
             },
           });
 

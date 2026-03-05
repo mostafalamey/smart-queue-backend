@@ -31,6 +31,7 @@ export interface LoginResult {
   user: {
     id: string;
     email: string;
+    name: string | null;
     role: AppRole;
     departmentId?: string;
     mustChangePassword: boolean;
@@ -268,6 +269,7 @@ export const loginWithPassword = async (
     return {
       id: lockedUser.id,
       email: lockedUser.email,
+      name: lockedUser.name,
       role: roleAssignment.role,
       departmentId: roleAssignment.departmentId ?? undefined,
       mustChangePassword: lockedUser.mustChangePassword,
@@ -288,6 +290,7 @@ export const loginWithPassword = async (
     user: {
       id: user.id,
       email: user.email,
+      name: user.name,
       role: user.role,
       departmentId: user.departmentId,
       mustChangePassword: user.mustChangePassword,
