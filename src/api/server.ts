@@ -438,6 +438,11 @@ const ADMIN_CONFIG_RESETS_ALLOWED_ROLES = new Set<AppRole>([
   AppRole.MANAGER,
 ]);
 
+const ADMIN_QUEUE_ALLOWED_ROLES = new Set<AppRole>([
+  AppRole.ADMIN,
+  AppRole.MANAGER,
+]);
+
 const getAuthenticatedPrincipal = (
   request: IncomingMessage,
   jwtAccessTokenSecret: string
@@ -1123,6 +1128,11 @@ const withAuthorizedNoPayload = async (
 
     if (error instanceof NotFoundError) {
       notFound(response, error.message);
+      return;
+    }
+
+    if (error instanceof RequestValidationError) {
+      invalidRequest(response, error.message);
       return;
     }
 
@@ -2512,11 +2522,6 @@ export const createApiRequestHandler = (
 
     // ── Admin ticket management (Admin + Manager) ─────────────────────────────
 
-    const ADMIN_QUEUE_ALLOWED_ROLES = new Set<AppRole>([
-      AppRole.ADMIN,
-      AppRole.MANAGER,
-    ]);
-
     // GET /admin/tickets/search?q=...&serviceId=...
     if (method === "GET" && path === "/admin/tickets/search") {
       await withAuthorizedNoPayload(
@@ -2884,35 +2889,36 @@ export const createApiRequestHandler = (
             throw new ForbiddenError("Manager access is limited to the assigned department");
           }
 
-          // Verify the caller holds the lock (or lock is expired)
-          const now = new Date();
-          if (
-            ticket.lockedByUserId &&
-            ticket.lockedByUserId !== principal.userId &&
-            ticket.lockedUntil &&
-            ticket.lockedUntil > now
-          ) {
-            throw new ForbiddenError("Ticket is locked by another user");
-          }
-
-          // Use the queue engine for the actual priority change (validates WAITING status)
+          // Lock validation, priority change, and lock release all happen
+          // atomically inside the queue engine's transaction.
           const actor: QueueActor = {
             actorType: "USER",
             actorUserId: principal.userId,
           };
 
-          await queueEngineService.changePriority({
-            ticketId,
-            priorityCategoryId: payload.priorityCategoryId,
-            priorityWeight: payload.priorityWeight,
-            actor,
-          });
-
-          // Release the lock after successful priority change
-          await prismaClient.ticket.update({
-            where: { id: ticketId },
-            data: { lockedByUserId: null, lockedUntil: null },
-          });
+          try {
+            await queueEngineService.changePriority({
+              ticketId,
+              priorityCategoryId: payload.priorityCategoryId,
+              priorityWeight: payload.priorityWeight,
+              actor,
+              lockOwnerId: principal.userId,
+            });
+          } catch (error: unknown) {
+            if (
+              error instanceof QueueEngineError &&
+              error.code === "TICKET_LOCKED_BY_OTHER"
+            ) {
+              throw new ForbiddenError("Ticket is locked by another user");
+            }
+            if (
+              error instanceof QueueEngineError &&
+              error.code === "PRIORITY_CHANGE_NOT_ALLOWED"
+            ) {
+              throw new RequestValidationError(error.message);
+            }
+            throw error;
+          }
 
           // Broadcast queue update (fire-and-forget)
           try {

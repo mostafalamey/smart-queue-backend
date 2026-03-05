@@ -76,6 +76,22 @@ export interface QueueEngineRepository {
   }): Promise<void>;
   insertEvent(event: QueueEventRecord): Promise<void>;
   /**
+   * Returns the lock fields for a ticket. Must be called inside a transaction
+   * after getTicketForUpdate so the row lock is already held.
+   */
+  getTicketLockState(
+    ticketId: string
+  ): Promise<{ lockedByUserId: string | null; lockedUntil: Date | null } | null>;
+  /**
+   * Clears lock fields and records an UNLOCKED event. Must be called inside a
+   * transaction.
+   */
+  clearTicketLock(args: {
+    ticketId: string;
+    actorUserId: string;
+    occurredAt: Date;
+  }): Promise<void>;
+  /**
    * Acquires a FOR UPDATE row lock on the Service record and returns the next
    * sequence number and formatted ticket number for the given service + date
    * bucket. Must be called inside a transaction.
@@ -473,6 +489,9 @@ export class QueueEngineService {
     priorityCategoryId: string;
     priorityWeight: number;
     actor: QueueActor;
+    /** When provided, lock ownership is validated and the lock is released
+     *  atomically within the same transaction as the priority change. */
+    lockOwnerId?: string;
     now?: Date;
   }): Promise<void> {
     const timestamp = args.now ?? new Date();
@@ -485,6 +504,25 @@ export class QueueEngineService {
           "Priority can only be changed while ticket is WAITING",
           "PRIORITY_CHANGE_NOT_ALLOWED"
         );
+      }
+
+      // Validate lock ownership within the transaction (row is already locked
+      // by getTicketForUpdate above, so lock state cannot change concurrently)
+      if (args.lockOwnerId) {
+        const lockState = await this.repository.getTicketLockState(
+          args.ticketId
+        );
+        if (
+          lockState?.lockedByUserId &&
+          lockState.lockedByUserId !== args.lockOwnerId &&
+          lockState.lockedUntil &&
+          lockState.lockedUntil > timestamp
+        ) {
+          throw new QueueEngineError(
+            "Ticket is locked by another user",
+            "TICKET_LOCKED_BY_OTHER"
+          );
+        }
       }
 
       await this.repository.updateTicketPriority({
@@ -506,6 +544,15 @@ export class QueueEngineService {
           priorityWeight: args.priorityWeight,
         },
       });
+
+      // Release the lock atomically within the same transaction
+      if (args.lockOwnerId) {
+        await this.repository.clearTicketLock({
+          ticketId: ticket.id,
+          actorUserId: args.actor.actorUserId ?? args.lockOwnerId,
+          occurredAt: timestamp,
+        });
+      }
     });
   }
 
