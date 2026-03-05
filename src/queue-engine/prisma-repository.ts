@@ -434,6 +434,39 @@ export class PrismaQueueEngineRepository implements QueueEngineRepository {
     });
   }
 
+  async getTicketLockState(
+    ticketId: string
+  ): Promise<{ lockedByUserId: string | null; lockedUntil: Date | null } | null> {
+    const client = this.getClient();
+    return client.ticket.findUnique({
+      where: { id: ticketId },
+      select: { lockedByUserId: true, lockedUntil: true },
+    });
+  }
+
+  async clearTicketLock(args: {
+    ticketId: string;
+    actorUserId: string;
+    occurredAt: Date;
+  }): Promise<void> {
+    const client = this.getClient();
+
+    await client.ticket.update({
+      where: { id: args.ticketId },
+      data: { lockedByUserId: null, lockedUntil: null },
+    });
+
+    await client.ticketEvent.create({
+      data: {
+        ticketId: args.ticketId,
+        eventType: "UNLOCKED",
+        actorType: "USER",
+        actorUserId: args.actorUserId,
+        occurredAt: args.occurredAt,
+      },
+    });
+  }
+
   private getClient(): PrismaClient | TransactionClient {
     return this.txStorage.getStore() ?? this.prisma;
   }

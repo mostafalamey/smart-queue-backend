@@ -438,6 +438,11 @@ const ADMIN_CONFIG_RESETS_ALLOWED_ROLES = new Set<AppRole>([
   AppRole.MANAGER,
 ]);
 
+const ADMIN_QUEUE_ALLOWED_ROLES = new Set<AppRole>([
+  AppRole.ADMIN,
+  AppRole.MANAGER,
+]);
+
 const getAuthenticatedPrincipal = (
   request: IncomingMessage,
   jwtAccessTokenSecret: string
@@ -1123,6 +1128,11 @@ const withAuthorizedNoPayload = async (
 
     if (error instanceof NotFoundError) {
       notFound(response, error.message);
+      return;
+    }
+
+    if (error instanceof RequestValidationError) {
+      invalidRequest(response, error.message);
       return;
     }
 
@@ -2509,6 +2519,462 @@ export const createApiRequestHandler = (
       );
       return;
     }
+
+    // ── Admin ticket management (Admin + Manager) ─────────────────────────────
+
+    // GET /admin/tickets/search?q=...&serviceId=...
+    if (method === "GET" && path === "/admin/tickets/search") {
+      await withAuthorizedNoPayload(
+        requestContext,
+        request,
+        response,
+        securityConfig.jwtAccessTokenSecret,
+        { allowedRoles: ADMIN_QUEUE_ALLOWED_ROLES },
+        async (principal, context) => {
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+
+          const rawQuery = request.url?.includes("?")
+            ? request.url.split("?")[1]
+            : "";
+          const queryParams = new URLSearchParams(rawQuery);
+          const q = queryParams.get("q")?.trim() ?? "";
+          const serviceId = queryParams.get("serviceId")?.trim() ?? undefined;
+
+          if (!q || q.length < 2) {
+            return {
+              status: 400,
+              body: { code: "INVALID_REQUEST", message: "Query parameter 'q' must be at least 2 characters" },
+            };
+          }
+
+          // Ensure the search string is safe for LIKE patterns
+          const safeTerm = q.replace(/[%_\\]/g, "\\$&");
+
+          const where: Record<string, unknown> = {
+            hospitalId: scope.hospitalId,
+            OR: [
+              { ticketNumber: { contains: safeTerm, mode: "insensitive" } },
+              { phoneNumber: { contains: safeTerm } },
+            ],
+          };
+
+          if (serviceId) {
+            where.serviceId = serviceId;
+          }
+
+          // Manager scoping: restrict to assigned department
+          if (scope.managerDepartmentId) {
+            where.departmentId = scope.managerDepartmentId;
+          }
+
+          const rows = await prismaClient.ticket.findMany({
+            where,
+            orderBy: { createdAt: "desc" },
+            take: 25,
+            include: {
+              priorityCategory: { select: { weight: true, nameEn: true, nameAr: true, code: true } },
+              service: { select: { nameEn: true, nameAr: true } },
+              department: { select: { nameEn: true, nameAr: true } },
+            },
+          });
+
+          const tickets = rows.map((row) => ({
+            id: row.id,
+            ticketNumber: row.ticketNumber,
+            phoneNumber: maskPhone(row.phoneNumber),
+            status: row.status as string,
+            serviceId: row.serviceId,
+            serviceName: { en: row.service.nameEn, ar: row.service.nameAr },
+            departmentId: row.departmentId,
+            departmentName: { en: row.department.nameEn, ar: row.department.nameAr },
+            priorityWeight: row.priorityCategory.weight,
+            priorityCategory: {
+              code: row.priorityCategory.code,
+              nameEn: row.priorityCategory.nameEn,
+              nameAr: row.priorityCategory.nameAr,
+            },
+            createdAt: row.createdAt.toISOString(),
+            calledAt: row.calledAt?.toISOString() ?? null,
+            servingStartedAt: row.servingStartedAt?.toISOString() ?? null,
+            completedAt: row.completedAt?.toISOString() ?? null,
+          }));
+
+          return {
+            status: 200,
+            body: { requestId: context.requestId, tickets },
+          };
+        }
+      );
+      return;
+    }
+
+    // GET /admin/tickets/:ticketId
+    const adminTicketDetailPathMatch = path.match(
+      /^\/admin\/tickets\/([^/]+)$/
+    );
+
+    if (method === "GET" && adminTicketDetailPathMatch) {
+      const ticketId = adminTicketDetailPathMatch[1];
+      await withAuthorizedNoPayload(
+        requestContext,
+        request,
+        response,
+        securityConfig.jwtAccessTokenSecret,
+        { allowedRoles: ADMIN_QUEUE_ALLOWED_ROLES },
+        async (principal, context) => {
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+
+          const row = await prismaClient.ticket.findFirst({
+            where: { id: ticketId, hospitalId: scope.hospitalId },
+            include: {
+              priorityCategory: { select: { weight: true, nameEn: true, nameAr: true, code: true } },
+              service: { select: { nameEn: true, nameAr: true } },
+              department: { select: { nameEn: true, nameAr: true } },
+              events: {
+                orderBy: { occurredAt: "asc" },
+                select: {
+                  id: true,
+                  eventType: true,
+                  actorType: true,
+                  actorUserId: true,
+                  stationId: true,
+                  payload: true,
+                  occurredAt: true,
+                },
+              },
+            },
+          });
+
+          if (!row) {
+            throw new NotFoundError("Ticket not found");
+          }
+
+          // Manager scoping
+          if (scope.managerDepartmentId && row.departmentId !== scope.managerDepartmentId) {
+            throw new ForbiddenError("Manager access is limited to the assigned department");
+          }
+
+          const ticket = {
+            id: row.id,
+            ticketNumber: row.ticketNumber,
+            phoneNumber: maskPhone(row.phoneNumber),
+            status: row.status as string,
+            sequenceNumber: row.sequenceNumber,
+            serviceId: row.serviceId,
+            serviceName: { en: row.service.nameEn, ar: row.service.nameAr },
+            departmentId: row.departmentId,
+            departmentName: { en: row.department.nameEn, ar: row.department.nameAr },
+            priorityWeight: row.priorityCategory.weight,
+            priorityCategory: {
+              code: row.priorityCategory.code,
+              nameEn: row.priorityCategory.nameEn,
+              nameAr: row.priorityCategory.nameAr,
+            },
+            calledAt: row.calledAt?.toISOString() ?? null,
+            servingStartedAt: row.servingStartedAt?.toISOString() ?? null,
+            completedAt: row.completedAt?.toISOString() ?? null,
+            noShowAt: row.noShowAt?.toISOString() ?? null,
+            cancelledAt: row.cancelledAt?.toISOString() ?? null,
+            calledCounterStationId: row.calledCounterStationId ?? null,
+            lockedByUserId: row.lockedByUserId ?? null,
+            lockedUntil: row.lockedUntil?.toISOString() ?? null,
+            originTicketId: row.originTicketId ?? null,
+            createdAt: row.createdAt.toISOString(),
+            updatedAt: row.updatedAt.toISOString(),
+            events: row.events.map((e) => ({
+              id: e.id,
+              eventType: e.eventType,
+              actorType: e.actorType,
+              actorUserId: e.actorUserId ?? null,
+              stationId: e.stationId ?? null,
+              payload: e.payload ?? null,
+              occurredAt: e.occurredAt.toISOString(),
+            })),
+          };
+
+          return {
+            status: 200,
+            body: { requestId: context.requestId, ticket },
+          };
+        }
+      );
+      return;
+    }
+
+    // POST /admin/tickets/:ticketId/lock
+    const adminTicketLockPathMatch = path.match(
+      /^\/admin\/tickets\/([^/]+)\/lock$/
+    );
+    if (method === "POST" && adminTicketLockPathMatch) {
+      const ticketId = adminTicketLockPathMatch[1];
+      await withAuthorizedNoPayload(
+        requestContext,
+        request,
+        response,
+        securityConfig.jwtAccessTokenSecret,
+        { allowedRoles: ADMIN_QUEUE_ALLOWED_ROLES },
+        async (principal, context) => {
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+          const LOCK_DURATION_MS = 2 * 60 * 1000; // 2 minutes
+
+          const result = await prismaClient.$transaction(async (tx) => {
+            const ticket = await tx.ticket.findFirst({
+              where: { id: ticketId, hospitalId: scope.hospitalId },
+            });
+
+            if (!ticket) {
+              throw new NotFoundError("Ticket not found");
+            }
+
+            if (scope.managerDepartmentId && ticket.departmentId !== scope.managerDepartmentId) {
+              throw new ForbiddenError("Manager access is limited to the assigned department");
+            }
+
+            if (ticket.status !== "WAITING") {
+              throw new RequestValidationError("Only WAITING tickets can be locked for priority change");
+            }
+
+            // If already locked by another user and lock hasn't expired
+            const now = new Date();
+            if (
+              ticket.lockedByUserId &&
+              ticket.lockedByUserId !== principal.userId &&
+              ticket.lockedUntil &&
+              ticket.lockedUntil > now
+            ) {
+              return {
+                status: 409 as const,
+                body: {
+                  code: "TICKET_LOCKED",
+                  message: "Ticket is already locked by another user",
+                  lockedByUserId: ticket.lockedByUserId,
+                  lockedUntil: ticket.lockedUntil.toISOString(),
+                },
+              };
+            }
+
+            const lockedUntil = new Date(now.getTime() + LOCK_DURATION_MS);
+
+            await tx.ticket.update({
+              where: { id: ticketId },
+              data: {
+                lockedByUserId: principal.userId,
+                lockedUntil,
+              },
+            });
+
+            await tx.ticketEvent.create({
+              data: {
+                ticketId: ticket.id,
+                eventType: "LOCKED",
+                actorType: "USER",
+                actorUserId: principal.userId,
+                occurredAt: now,
+                payload: { lockedUntil: lockedUntil.toISOString() },
+              },
+            });
+
+            return {
+              status: 200 as const,
+              body: {
+                requestId: context.requestId,
+                ticketId: ticket.id,
+                lockedByUserId: principal.userId,
+                lockedUntil: lockedUntil.toISOString(),
+              },
+            };
+          });
+
+          return result;
+        }
+      );
+      return;
+    }
+
+    // POST /admin/tickets/:ticketId/unlock
+    const adminTicketUnlockPathMatch = path.match(
+      /^\/admin\/tickets\/([^/]+)\/unlock$/
+    );
+    if (method === "POST" && adminTicketUnlockPathMatch) {
+      const ticketId = adminTicketUnlockPathMatch[1];
+      await withAuthorizedNoPayload(
+        requestContext,
+        request,
+        response,
+        securityConfig.jwtAccessTokenSecret,
+        { allowedRoles: ADMIN_QUEUE_ALLOWED_ROLES },
+        async (principal, context) => {
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+
+          await prismaClient.$transaction(async (tx) => {
+            const ticket = await tx.ticket.findFirst({
+              where: { id: ticketId, hospitalId: scope.hospitalId },
+            });
+
+            if (!ticket) {
+              throw new NotFoundError("Ticket not found");
+            }
+
+            if (scope.managerDepartmentId && ticket.departmentId !== scope.managerDepartmentId) {
+              throw new ForbiddenError("Manager access is limited to the assigned department");
+            }
+
+            // Only the lock owner (or admin) can unlock
+            if (
+              ticket.lockedByUserId &&
+              ticket.lockedByUserId !== principal.userId &&
+              principal.role !== AppRole.ADMIN
+            ) {
+              throw new ForbiddenError("Only the lock owner or an Admin can unlock this ticket");
+            }
+
+            await tx.ticket.update({
+              where: { id: ticketId },
+              data: {
+                lockedByUserId: null,
+                lockedUntil: null,
+              },
+            });
+
+            await tx.ticketEvent.create({
+              data: {
+                ticketId: ticket.id,
+                eventType: "UNLOCKED",
+                actorType: "USER",
+                actorUserId: principal.userId,
+                occurredAt: new Date(),
+              },
+            });
+          });
+
+          return {
+            status: 200,
+            body: { requestId: context.requestId, success: true },
+          };
+        }
+      );
+      return;
+    }
+
+    // POST /admin/tickets/:ticketId/change-priority
+    const adminChangePriorityPathMatch = path.match(
+      /^\/admin\/tickets\/([^/]+)\/change-priority$/
+    );
+    if (method === "POST" && adminChangePriorityPathMatch) {
+      const ticketId = adminChangePriorityPathMatch[1];
+      await withAuthorizedPayload(
+        requestContext,
+        request,
+        response,
+        (payload: JsonRecord) => {
+          const priorityCategoryId = requireString(payload, "priorityCategoryId");
+          const priorityWeight = requireNumber(payload, "priorityWeight");
+          return { priorityCategoryId, priorityWeight };
+        },
+        securityConfig.jwtAccessTokenSecret,
+        { allowedRoles: ADMIN_QUEUE_ALLOWED_ROLES },
+        async (payload, principal, context) => {
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+
+          // Verify ticket belongs to this hospital and manager scope
+          const ticket = await prismaClient.ticket.findFirst({
+            where: { id: ticketId, hospitalId: scope.hospitalId },
+          });
+
+          if (!ticket) {
+            throw new NotFoundError("Ticket not found");
+          }
+
+          if (scope.managerDepartmentId && ticket.departmentId !== scope.managerDepartmentId) {
+            throw new ForbiddenError("Manager access is limited to the assigned department");
+          }
+
+          // Lock validation, priority change, and lock release all happen
+          // atomically inside the queue engine's transaction.
+          const actor: QueueActor = {
+            actorType: "USER",
+            actorUserId: principal.userId,
+          };
+
+          try {
+            await queueEngineService.changePriority({
+              ticketId,
+              priorityCategoryId: payload.priorityCategoryId,
+              priorityWeight: payload.priorityWeight,
+              actor,
+              lockOwnerId: principal.userId,
+            });
+          } catch (error: unknown) {
+            if (
+              error instanceof QueueEngineError &&
+              error.code === "TICKET_LOCKED_BY_OTHER"
+            ) {
+              throw new ForbiddenError("Ticket is locked by another user");
+            }
+            if (
+              error instanceof QueueEngineError &&
+              error.code === "PRIORITY_CHANGE_NOT_ALLOWED"
+            ) {
+              throw new RequestValidationError(error.message);
+            }
+            throw error;
+          }
+
+          // Broadcast queue update (fire-and-forget)
+          try {
+            realtimeBroadcaster.broadcastQueueUpdated({
+              requestId: context.requestId,
+              operation: "admin.change-priority",
+              ticketId,
+              serviceId: ticket.serviceId,
+              stationId: undefined,
+              occurredAt: new Date().toISOString(),
+            });
+          } catch {
+            // fire-and-forget
+          }
+
+          return {
+            status: 200,
+            body: { requestId: context.requestId, success: true },
+          };
+        }
+      );
+      return;
+    }
+
+    // GET /admin/priority-categories
+    if (method === "GET" && path === "/admin/priority-categories") {
+      await withAuthorizedNoPayload(
+        requestContext,
+        request,
+        response,
+        securityConfig.jwtAccessTokenSecret,
+        { allowedRoles: ADMIN_QUEUE_ALLOWED_ROLES },
+        async (principal, context) => {
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+          const categories = await prismaClient.priorityCategory.findMany({
+            where: { hospitalId: scope.hospitalId },
+            orderBy: { weight: "desc" },
+            select: {
+              id: true,
+              code: true,
+              nameEn: true,
+              nameAr: true,
+              weight: true,
+            },
+          });
+
+          return {
+            status: 200,
+            body: { requestId: context.requestId, categories },
+          };
+        }
+      );
+      return;
+    }
+
+    // ── End admin ticket management ─────────────────────────────────────────
 
     // ── Transfer reasons ──────────────────────────────────────────────────────
 
