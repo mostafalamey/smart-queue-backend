@@ -311,7 +311,7 @@ async function main() {
   });
 
   const existingMgrRole = await prisma.roleAssignment.findFirst({
-    where: { userId: mgrUser.id, role: "MANAGER", departmentId: "dept-seed-general" },
+    where: { userId: mgrUser.id, role: "MANAGER" },
   });
   if (!existingMgrRole) {
     await prisma.roleAssignment.create({
