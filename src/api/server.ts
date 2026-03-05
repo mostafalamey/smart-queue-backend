@@ -257,6 +257,13 @@ class TooManyRequestsError extends Error {
   }
 }
 
+class ConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ConflictError";
+  }
+}
+
 const REQUEST_ID_HEADER = "x-request-id";
 
 const createRequestId = (): string => {
@@ -389,6 +396,13 @@ const notFound = (response: ServerResponse, message: string): void => {
 const tooManyRequests = (response: ServerResponse, message: string): void => {
   json(response, 429, {
     code: "TOO_MANY_REQUESTS",
+    message,
+  });
+};
+
+const conflict = (response: ServerResponse, message: string): void => {
+  json(response, 409, {
+    code: "CONFLICT",
     message,
   });
 };
@@ -1477,6 +1491,11 @@ const withAuthorizedNoPayload = async (
 
     if (error instanceof RequestValidationError) {
       invalidRequest(response, error.message);
+      return;
+    }
+
+    if (error instanceof ConflictError) {
+      conflict(response, error.message);
       return;
     }
 
@@ -3568,10 +3587,7 @@ export const createApiRequestHandler = (
               throw new NotFoundError("Transfer reason not found");
             }
 
-            await tx.transferReason.update({
-              where: { id: reasonId },
-              data: { isActive: false },
-            });
+            await tx.transferReason.delete({ where: { id: reasonId } });
 
             await tx.auditLog.create({
               data: {
@@ -3586,9 +3602,7 @@ export const createApiRequestHandler = (
                   sortOrder: existing.sortOrder,
                   isActive: existing.isActive,
                 },
-                after: {
-                  isActive: false,
-                },
+                after: null,
               },
             });
           });
@@ -3889,17 +3903,26 @@ export const createApiRequestHandler = (
               throw new NotFoundError("Department not found");
             }
 
-            await tx.department.update({ where: { id: departmentId }, data: { isActive: false } });
+            try {
+              await tx.department.delete({ where: { id: departmentId } });
+            } catch (err) {
+              if (err instanceof Prisma.PrismaClientKnownRequestError && (err.code === "P2003" || err.code === "P2014")) {
+                throw new ConflictError(
+                  "This department has existing tickets and cannot be permanently deleted. Use the toggle to deactivate it instead."
+                );
+              }
+              throw err;
+            }
 
             await tx.auditLog.create({
               data: {
                 hospitalId: scope.hospitalId,
                 actorUserId: scope.principal.userId,
-                action: "DEPARTMENT_DEACTIVATED",
+                action: "DEPARTMENT_DELETED",
                 entityType: "DEPARTMENT",
                 entityId: departmentId,
-                before: { isActive: existing.isActive },
-                after: { isActive: false },
+                before: { nameEn: existing.nameEn, nameAr: existing.nameAr, isActive: existing.isActive },
+                after: null,
               },
             });
           });
@@ -4118,17 +4141,26 @@ export const createApiRequestHandler = (
               throw new NotFoundError("Service not found");
             }
 
-            await tx.service.update({ where: { id: serviceId }, data: { isActive: false } });
+            try {
+              await tx.service.delete({ where: { id: serviceId } });
+            } catch (err) {
+              if (err instanceof Prisma.PrismaClientKnownRequestError && (err.code === "P2003" || err.code === "P2014")) {
+                throw new ConflictError(
+                  "This service has existing tickets and cannot be permanently deleted. Use the toggle to deactivate it instead."
+                );
+              }
+              throw err;
+            }
 
             await tx.auditLog.create({
               data: {
                 hospitalId: scope.hospitalId,
                 actorUserId: scope.principal.userId,
-                action: "SERVICE_DEACTIVATED",
+                action: "SERVICE_DELETED",
                 entityType: "SERVICE",
                 entityId: serviceId,
-                before: { isActive: existing.isActive },
-                after: { isActive: false },
+                before: { nameEn: existing.nameEn, nameAr: existing.nameAr, isActive: existing.isActive },
+                after: null,
               },
             });
           });
@@ -4339,17 +4371,17 @@ export const createApiRequestHandler = (
               throw new NotFoundError("Counter station not found");
             }
 
-            await tx.counterStation.update({ where: { id: stationId }, data: { isActive: false } });
+            await tx.counterStation.delete({ where: { id: stationId } });
 
             await tx.auditLog.create({
               data: {
                 hospitalId: scope.hospitalId,
                 actorUserId: scope.principal.userId,
-                action: "STATION_DEACTIVATED",
+                action: "STATION_DELETED",
                 entityType: "COUNTER_STATION",
                 entityId: stationId,
-                before: { isActive: existing.isActive },
-                after: { isActive: false },
+                before: { counterCode: existing.counterCode, isActive: existing.isActive },
+                after: null,
               },
             });
           });
@@ -4879,17 +4911,17 @@ export const createApiRequestHandler = (
               throw new NotFoundError("Device not found");
             }
 
-            await tx.device.update({ where: { id: deviceDbId }, data: { isActive: false } });
+            await tx.device.delete({ where: { id: deviceDbId } });
 
             await tx.auditLog.create({
               data: {
                 hospitalId: scope.hospitalId,
                 actorUserId: scope.principal.userId,
-                action: "DEVICE_DEACTIVATED",
+                action: "DEVICE_DELETED",
                 entityType: "DEVICE",
                 entityId: deviceDbId,
-                before: { isActive: existing.isActive },
-                after: { isActive: false },
+                before: { deviceId: existing.deviceId, isActive: existing.isActive },
+                after: null,
               },
             });
           });
