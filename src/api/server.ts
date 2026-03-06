@@ -520,6 +520,8 @@ const TELLER_ROUTE_ALLOWED_ROLES = new Set<AppRole>([
 
 const ADMIN_ONLY_ROLES = new Set<AppRole>([AppRole.ADMIN]);
 
+const DEPT_SCOPED_ROLES = new Set<AppRole>([AppRole.MANAGER, AppRole.STAFF]);
+
 const ADMIN_CONFIG_SETTINGS_ALLOWED_ROLES = new Set<AppRole>([
   AppRole.ADMIN,
   AppRole.IT,
@@ -3791,10 +3793,20 @@ export const createApiRequestHandler = (
               );
             }
 
-            const created = await tx.department.create({
-              data: { hospitalId: scope.hospitalId, nameAr: payload.nameAr, nameEn: payload.nameEn },
-              select: { id: true, nameAr: true, nameEn: true, isActive: true, createdAt: true, updatedAt: true },
-            });
+            let created;
+            try {
+              created = await tx.department.create({
+                data: { hospitalId: scope.hospitalId, nameAr: payload.nameAr, nameEn: payload.nameEn },
+                select: { id: true, nameAr: true, nameEn: true, isActive: true, createdAt: true, updatedAt: true },
+              });
+            } catch (err) {
+              if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
+                throw new RequestValidationError(
+                  `A department named "${payload.nameEn}" already exists`
+                );
+              }
+              throw err;
+            }
 
             await tx.auditLog.create({
               data: {
@@ -4441,13 +4453,12 @@ export const createApiRequestHandler = (
         async (payload, principal, context) => {
           const scope = await resolvePrincipalAccessScope(prismaClient, principal);
 
-          const deptScopedRoles = new Set<AppRole>([AppRole.MANAGER, AppRole.STAFF]);
-          if (deptScopedRoles.has(payload.role) && !payload.departmentId) {
+          if (DEPT_SCOPED_ROLES.has(payload.role) && !payload.departmentId) {
             throw new RequestValidationError(
               "departmentId is required for MANAGER and STAFF roles"
             );
           }
-          if (!deptScopedRoles.has(payload.role) && payload.departmentId) {
+          if (!DEPT_SCOPED_ROLES.has(payload.role) && payload.departmentId) {
             throw new RequestValidationError(
               "departmentId must not be provided for ADMIN and IT roles"
             );
@@ -4561,8 +4572,7 @@ export const createApiRequestHandler = (
             }
 
             if (payload.role !== undefined) {
-              const deptScopedRoles = new Set<AppRole>([AppRole.MANAGER, AppRole.STAFF]);
-              const needsDept = deptScopedRoles.has(payload.role);
+              const needsDept = DEPT_SCOPED_ROLES.has(payload.role);
               const newDeptId = payload.departmentId !== undefined ? payload.departmentId : null;
 
               if (needsDept && !newDeptId) {
@@ -4586,6 +4596,23 @@ export const createApiRequestHandler = (
               await tx.roleAssignment.deleteMany({ where: { userId: targetUserId } });
               await tx.roleAssignment.create({
                 data: { userId: targetUserId, role: payload.role, departmentId: newDeptId },
+              });
+            } else if (payload.departmentId !== undefined) {
+              const currentAssignment = existing.roleAssignments[0];
+              if (!currentAssignment || !DEPT_SCOPED_ROLES.has(currentAssignment.role)) {
+                throw new RequestValidationError(
+                  "departmentId can only be updated for users with MANAGER or STAFF role"
+                );
+              }
+              if (payload.departmentId !== null) {
+                const dept = await tx.department.findUnique({ where: { id: payload.departmentId } });
+                if (!dept || dept.hospitalId !== scope.hospitalId) {
+                  throw new RequestValidationError("departmentId does not refer to a valid department");
+                }
+              }
+              await tx.roleAssignment.updateMany({
+                where: { userId: targetUserId },
+                data: { departmentId: payload.departmentId },
               });
             }
 
@@ -4623,6 +4650,9 @@ export const createApiRequestHandler = (
                     role: payload.role,
                     departmentId: payload.departmentId ?? null,
                   }),
+                  ...(payload.role === undefined && payload.departmentId !== undefined && {
+                    departmentId: payload.departmentId,
+                  }),
                 },
               },
             });
@@ -4651,13 +4681,13 @@ export const createApiRequestHandler = (
         async (payload, principal, context) => {
           const scope = await resolvePrincipalAccessScope(prismaClient, principal);
 
+          const newHash = await createArgon2idPasswordHash(payload.newPassword);
+
           await prismaClient.$transaction(async (tx) => {
             const existing = await tx.user.findUnique({ where: { id: targetUserId } });
             if (!existing || existing.hospitalId !== scope.hospitalId) {
               throw new NotFoundError("User not found");
             }
-
-            const newHash = await createArgon2idPasswordHash(payload.newPassword);
 
             await tx.user.update({
               where: { id: targetUserId },
