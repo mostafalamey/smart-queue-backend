@@ -2,7 +2,7 @@
 /// <reference path="../types/crypto-shim.d.ts" />
 
 import { createServer, IncomingMessage, Server, ServerResponse } from "node:http";
-import { AppRole, PrismaClient, TemplateChannel } from "@prisma/client";
+import { AppRole, Prisma, PrismaClient, TemplateChannel } from "@prisma/client";
 import { createTellerApiHandlers } from "./teller";
 import { failure, HttpResponse } from "./http";
 import {
@@ -65,6 +65,82 @@ interface ParsedAdminTransferReasonPatchPayload {
   nameEn?: string;
   nameAr?: string;
   sortOrder?: number;
+  isActive?: boolean;
+}
+
+// ── Phase D payload interfaces ─────────────────────────────────────────────
+
+interface ParsedAdminOrgPatchPayload {
+  nameAr?: string;
+  nameEn?: string;
+  address?: string;
+  email?: string;
+  website?: string;
+  timezone?: string;
+}
+
+interface ParsedAdminDepartmentPayload {
+  nameAr: string;
+  nameEn: string;
+}
+
+interface ParsedAdminDepartmentPatchPayload {
+  nameAr?: string;
+  nameEn?: string;
+  isActive?: boolean;
+}
+
+interface ParsedAdminServicePayload {
+  nameAr: string;
+  nameEn: string;
+  ticketPrefix: string;
+  estimatedWaitMinutes?: number;
+  nearingTurnThreshold?: number;
+  dailyResetEnabled?: boolean;
+}
+
+interface ParsedAdminServicePatchPayload {
+  nameAr?: string;
+  nameEn?: string;
+  ticketPrefix?: string;
+  estimatedWaitMinutes?: number | null;
+  nearingTurnThreshold?: number;
+  dailyResetEnabled?: boolean;
+  isActive?: boolean;
+}
+
+interface ParsedAdminUserPayload {
+  email: string;
+  name?: string;
+  password: string;
+  role: AppRole;
+  departmentId?: string;
+}
+
+interface ParsedAdminUserPatchPayload {
+  name?: string;
+  email?: string;
+  isActive?: boolean;
+  role?: AppRole;
+  departmentId?: string | null;
+}
+
+interface ParsedAdminResetPasswordPayload {
+  newPassword: string;
+}
+
+interface ParsedAdminDevicePayload {
+  deviceId: string;
+  deviceType: string;
+  displayName?: string;
+  assignedDepartmentId?: string;
+  assignedCounterStationId?: string;
+}
+
+interface ParsedAdminDevicePatchPayload {
+  displayName?: string;
+  assignedDepartmentId?: string | null;
+  assignedCounterStationId?: string | null;
   isActive?: boolean;
 }
 
@@ -178,6 +254,13 @@ class TooManyRequestsError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "TooManyRequestsError";
+  }
+}
+
+class ConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ConflictError";
   }
 }
 
@@ -317,6 +400,13 @@ const tooManyRequests = (response: ServerResponse, message: string): void => {
   });
 };
 
+const conflict = (response: ServerResponse, message: string): void => {
+  json(response, 409, {
+    code: "CONFLICT",
+    message,
+  });
+};
+
 const getHeader = (request: IncomingMessage, name: string): string | undefined => {
   const headers = request.headers as Record<string, string | string[] | undefined>;
   const value = headers[name.toLowerCase()];
@@ -427,6 +517,10 @@ const TELLER_ROUTE_ALLOWED_ROLES = new Set<AppRole>([
   AppRole.MANAGER,
   AppRole.STAFF,
 ]);
+
+const ADMIN_ONLY_ROLES = new Set<AppRole>([AppRole.ADMIN]);
+
+const DEPT_SCOPED_ROLES = new Set<AppRole>([AppRole.MANAGER, AppRole.STAFF]);
 
 const ADMIN_CONFIG_SETTINGS_ALLOWED_ROLES = new Set<AppRole>([
   AppRole.ADMIN,
@@ -729,6 +823,272 @@ const parseAdminTransferReasonPatchPayload = (
     throw new RequestValidationError(
       "At least one field (nameEn, nameAr, sortOrder, isActive) must be provided"
     );
+  }
+
+  return result;
+};
+
+// ── Phase D parse functions ────────────────────────────────────────────────
+
+const VALID_TIMEZONES = new Set<string>(
+  typeof Intl !== "undefined" && "supportedValuesOf" in Intl
+    ? (Intl as { supportedValuesOf: (key: string) => string[] }).supportedValuesOf("timeZone")
+    : []
+);
+
+const parseAdminOrgPatchPayload = (
+  payload: JsonRecord
+): ParsedAdminOrgPatchPayload => {
+  const result: ParsedAdminOrgPatchPayload = {
+    nameAr: optionalString(payload, "nameAr"),
+    nameEn: optionalString(payload, "nameEn"),
+    address: optionalString(payload, "address"),
+    email: optionalString(payload, "email"),
+    website: optionalString(payload, "website"),
+    timezone: optionalString(payload, "timezone"),
+  };
+
+  if (
+    result.nameAr === undefined &&
+    result.nameEn === undefined &&
+    result.address === undefined &&
+    result.email === undefined &&
+    result.website === undefined &&
+    result.timezone === undefined
+  ) {
+    throw new RequestValidationError(
+      "At least one field must be provided"
+    );
+  }
+
+  if (result.timezone !== undefined && VALID_TIMEZONES.size > 0 && !VALID_TIMEZONES.has(result.timezone)) {
+    throw new RequestValidationError("timezone must be a valid IANA timezone identifier");
+  }
+
+  return result;
+};
+
+const parseAdminDepartmentPayload = (
+  payload: JsonRecord
+): ParsedAdminDepartmentPayload => {
+  return {
+    nameAr: requireString(payload, "nameAr"),
+    nameEn: requireString(payload, "nameEn"),
+  };
+};
+
+const parseAdminDepartmentPatchPayload = (
+  payload: JsonRecord
+): ParsedAdminDepartmentPatchPayload => {
+  const result: ParsedAdminDepartmentPatchPayload = {
+    nameAr: optionalString(payload, "nameAr"),
+    nameEn: optionalString(payload, "nameEn"),
+    isActive: optionalBoolean(payload, "isActive"),
+  };
+
+  if (
+    result.nameAr === undefined &&
+    result.nameEn === undefined &&
+    result.isActive === undefined
+  ) {
+    throw new RequestValidationError(
+      "At least one field (nameAr, nameEn, isActive) must be provided"
+    );
+  }
+
+  return result;
+};
+
+const parseAdminServicePayload = (
+  payload: JsonRecord
+): ParsedAdminServicePayload => {
+  return {
+    nameAr: requireString(payload, "nameAr"),
+    nameEn: requireString(payload, "nameEn"),
+    ticketPrefix: requireString(payload, "ticketPrefix"),
+    estimatedWaitMinutes: optionalNonNegativeInteger(payload, "estimatedWaitMinutes"),
+    nearingTurnThreshold: optionalNonNegativeInteger(payload, "nearingTurnThreshold"),
+    dailyResetEnabled: optionalBoolean(payload, "dailyResetEnabled"),
+  };
+};
+
+const parseAdminServicePatchPayload = (
+  payload: JsonRecord
+): ParsedAdminServicePatchPayload => {
+  // estimatedWaitMinutes supports explicit null to clear the value
+  const rawWait = payload["estimatedWaitMinutes"];
+  let estimatedWaitMinutes: number | null | undefined;
+  if (rawWait === null) {
+    estimatedWaitMinutes = null;
+  } else if (rawWait === undefined) {
+    estimatedWaitMinutes = undefined;
+  } else {
+    const parsed = optionalNonNegativeInteger(payload, "estimatedWaitMinutes");
+    estimatedWaitMinutes = parsed;
+  }
+
+  const result: ParsedAdminServicePatchPayload = {
+    nameAr: optionalString(payload, "nameAr"),
+    nameEn: optionalString(payload, "nameEn"),
+    ticketPrefix: optionalString(payload, "ticketPrefix"),
+    estimatedWaitMinutes,
+    nearingTurnThreshold: optionalNonNegativeInteger(payload, "nearingTurnThreshold"),
+    dailyResetEnabled: optionalBoolean(payload, "dailyResetEnabled"),
+    isActive: optionalBoolean(payload, "isActive"),
+  };
+
+  if (
+    result.nameAr === undefined &&
+    result.nameEn === undefined &&
+    result.ticketPrefix === undefined &&
+    result.estimatedWaitMinutes === undefined &&
+    result.nearingTurnThreshold === undefined &&
+    result.dailyResetEnabled === undefined &&
+    result.isActive === undefined
+  ) {
+    throw new RequestValidationError("At least one field must be provided");
+  }
+
+  return result;
+};
+
+const parseAdminUserPayload = (
+  payload: JsonRecord
+): ParsedAdminUserPayload => {
+  const password = requireString(payload, "password");
+  if (password.length < MIN_NEW_PASSWORD_LENGTH) {
+    throw new RequestValidationError(
+      `password must be at least ${MIN_NEW_PASSWORD_LENGTH} characters`
+    );
+  }
+
+  const rawRole = requireString(payload, "role");
+  const role = parseRole(rawRole);
+  if (!role) {
+    throw new RequestValidationError("role must be a valid AppRole");
+  }
+
+  return {
+    email: requireString(payload, "email"),
+    name: optionalString(payload, "name"),
+    password,
+    role,
+    departmentId: optionalString(payload, "departmentId"),
+  };
+};
+
+const parseAdminUserPatchPayload = (
+  payload: JsonRecord
+): ParsedAdminUserPatchPayload => {
+  // departmentId supports explicit null to remove dept scope
+  const rawDeptId = payload["departmentId"];
+  let departmentId: string | null | undefined;
+  if (rawDeptId === null) {
+    departmentId = null;
+  } else if (rawDeptId === undefined) {
+    departmentId = undefined;
+  } else {
+    departmentId = optionalString(payload, "departmentId");
+  }
+
+  const role = optionalRole(payload, "role");
+
+  const result: ParsedAdminUserPatchPayload = {
+    name: optionalString(payload, "name"),
+    email: optionalString(payload, "email"),
+    isActive: optionalBoolean(payload, "isActive"),
+    role,
+    departmentId,
+  };
+
+  if (
+    result.name === undefined &&
+    result.email === undefined &&
+    result.isActive === undefined &&
+    result.role === undefined &&
+    result.departmentId === undefined
+  ) {
+    throw new RequestValidationError("At least one field must be provided");
+  }
+
+  return result;
+};
+
+const parseAdminResetPasswordPayload = (
+  payload: JsonRecord
+): ParsedAdminResetPasswordPayload => {
+  const newPassword = requireString(payload, "newPassword");
+  if (newPassword.length < MIN_NEW_PASSWORD_LENGTH) {
+    throw new RequestValidationError(
+      `newPassword must be at least ${MIN_NEW_PASSWORD_LENGTH} characters`
+    );
+  }
+  return { newPassword };
+};
+
+const VALID_DEVICE_TYPES = new Set<string>(["KIOSK", "TELLER_PC", "SIGNAGE_PLAYER", "LED_ADAPTER"]);
+
+/** Cast a plain record to Prisma's InputJsonValue for audit log fields. */
+const asAuditJson = (val: Record<string, unknown>): Prisma.InputJsonValue =>
+  val as unknown as Prisma.InputJsonValue;
+
+const parseAdminDevicePayload = (
+  payload: JsonRecord
+): ParsedAdminDevicePayload => {
+  const deviceType = requireString(payload, "deviceType");
+  if (!VALID_DEVICE_TYPES.has(deviceType)) {
+    throw new RequestValidationError(
+      "deviceType must be one of: KIOSK, TELLER_PC, SIGNAGE_PLAYER, LED_ADAPTER"
+    );
+  }
+
+  return {
+    deviceId: requireString(payload, "deviceId"),
+    deviceType,
+    displayName: optionalString(payload, "displayName"),
+    assignedDepartmentId: optionalString(payload, "assignedDepartmentId"),
+    assignedCounterStationId: optionalString(payload, "assignedCounterStationId"),
+  };
+};
+
+const parseAdminDevicePatchPayload = (
+  payload: JsonRecord
+): ParsedAdminDevicePatchPayload => {
+  // assignedDepartmentId / assignedCounterStationId support explicit null to unassign
+  const rawDeptId = payload["assignedDepartmentId"];
+  let assignedDepartmentId: string | null | undefined;
+  if (rawDeptId === null) {
+    assignedDepartmentId = null;
+  } else if (rawDeptId === undefined) {
+    assignedDepartmentId = undefined;
+  } else {
+    assignedDepartmentId = optionalString(payload, "assignedDepartmentId");
+  }
+
+  const rawStationId = payload["assignedCounterStationId"];
+  let assignedCounterStationId: string | null | undefined;
+  if (rawStationId === null) {
+    assignedCounterStationId = null;
+  } else if (rawStationId === undefined) {
+    assignedCounterStationId = undefined;
+  } else {
+    assignedCounterStationId = optionalString(payload, "assignedCounterStationId");
+  }
+
+  const result: ParsedAdminDevicePatchPayload = {
+    displayName: optionalString(payload, "displayName"),
+    assignedDepartmentId,
+    assignedCounterStationId,
+    isActive: optionalBoolean(payload, "isActive"),
+  };
+
+  if (
+    result.displayName === undefined &&
+    result.assignedDepartmentId === undefined &&
+    result.assignedCounterStationId === undefined &&
+    result.isActive === undefined
+  ) {
+    throw new RequestValidationError("At least one field must be provided");
   }
 
   return result;
@@ -1133,6 +1493,11 @@ const withAuthorizedNoPayload = async (
 
     if (error instanceof RequestValidationError) {
       invalidRequest(response, error.message);
+      return;
+    }
+
+    if (error instanceof ConflictError) {
+      conflict(response, error.message);
       return;
     }
 
@@ -3224,10 +3589,7 @@ export const createApiRequestHandler = (
               throw new NotFoundError("Transfer reason not found");
             }
 
-            await tx.transferReason.update({
-              where: { id: reasonId },
-              data: { isActive: false },
-            });
+            await tx.transferReason.delete({ where: { id: reasonId } });
 
             await tx.auditLog.create({
               data: {
@@ -3242,9 +3604,7 @@ export const createApiRequestHandler = (
                   sortOrder: existing.sortOrder,
                   isActive: existing.isActive,
                 },
-                after: {
-                  isActive: false,
-                },
+                after: null,
               },
             });
           });
@@ -3255,6 +3615,1350 @@ export const createApiRequestHandler = (
               requestId: context.requestId,
               success: true,
             },
+          };
+        }
+      );
+      return;
+    }
+
+    // ── Phase D: Organization metadata ────────────────────────────────────────
+
+    if (method === "GET" && path === "/admin/organization") {
+      await withAuthorizedNoPayload(
+        requestContext,
+        request,
+        response,
+        securityConfig.jwtAccessTokenSecret,
+        { allowedRoles: ADMIN_ONLY_ROLES },
+        async (principal, context) => {
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+          const hospital = await prismaClient.hospital.findUnique({
+            where: { id: scope.hospitalId },
+            select: {
+              id: true,
+              nameAr: true,
+              nameEn: true,
+              address: true,
+              email: true,
+              website: true,
+              logoPath: true,
+              timezone: true,
+              updatedAt: true,
+            },
+          });
+
+          if (!hospital) throw new NotFoundError("Organization record not found");
+
+          return {
+            status: 200,
+            body: { requestId: context.requestId, organization: hospital },
+          };
+        }
+      );
+      return;
+    }
+
+    if (method === "PATCH" && path === "/admin/organization") {
+      await withAuthorizedPayload(
+        requestContext,
+        request,
+        response,
+        parseAdminOrgPatchPayload,
+        securityConfig.jwtAccessTokenSecret,
+        { allowedRoles: ADMIN_ONLY_ROLES },
+        async (payload, principal, context) => {
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+
+          const updated = await prismaClient.$transaction(async (tx) => {
+            const existing = await tx.hospital.findUnique({
+              where: { id: scope.hospitalId },
+              select: { nameAr: true, nameEn: true, address: true, email: true, website: true, timezone: true },
+            });
+            if (!existing) throw new NotFoundError("Organization record not found");
+
+            const data: Record<string, unknown> = {};
+            if (payload.nameAr !== undefined) data.nameAr = payload.nameAr;
+            if (payload.nameEn !== undefined) data.nameEn = payload.nameEn;
+            if (payload.address !== undefined) data.address = payload.address;
+            if (payload.email !== undefined) data.email = payload.email;
+            if (payload.website !== undefined) data.website = payload.website;
+            if (payload.timezone !== undefined) data.timezone = payload.timezone;
+
+            const org = await tx.hospital.update({
+              where: { id: scope.hospitalId },
+              data,
+              select: {
+                id: true,
+                nameAr: true,
+                nameEn: true,
+                address: true,
+                email: true,
+                website: true,
+                logoPath: true,
+                timezone: true,
+                updatedAt: true,
+              },
+            });
+
+            await tx.auditLog.create({
+              data: {
+                hospitalId: scope.hospitalId,
+                actorUserId: scope.principal.userId,
+                action: "ORGANIZATION_UPDATED",
+                entityType: "HOSPITAL",
+                entityId: scope.hospitalId,
+                before: asAuditJson(existing as Record<string, unknown>),
+                after: asAuditJson(data),
+              },
+            });
+
+            return org;
+          });
+
+          return {
+            status: 200,
+            body: { requestId: context.requestId, organization: updated },
+          };
+        }
+      );
+      return;
+    }
+
+    // ── Phase D: Departments ───────────────────────────────────────────────────
+
+    if (method === "GET" && path === "/admin/departments") {
+      await withAuthorizedNoPayload(
+        requestContext,
+        request,
+        response,
+        securityConfig.jwtAccessTokenSecret,
+        { allowedRoles: ADMIN_ONLY_ROLES },
+        async (principal, context) => {
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+          const departments = await prismaClient.department.findMany({
+            where: { hospitalId: scope.hospitalId },
+            orderBy: { nameEn: "asc" },
+            select: {
+              id: true,
+              nameAr: true,
+              nameEn: true,
+              isActive: true,
+              createdAt: true,
+              updatedAt: true,
+              services: {
+                orderBy: { nameEn: "asc" },
+                select: {
+                  id: true,
+                  nameAr: true,
+                  nameEn: true,
+                  ticketPrefix: true,
+                  estimatedWaitMinutes: true,
+                  nearingTurnThreshold: true,
+                  dailyResetEnabled: true,
+                  isActive: true,
+                  createdAt: true,
+                  updatedAt: true,
+                },
+              },
+            },
+          });
+
+          return {
+            status: 200,
+            body: { requestId: context.requestId, departments },
+          };
+        }
+      );
+      return;
+    }
+
+    if (method === "POST" && path === "/admin/departments") {
+      await withAuthorizedPayload(
+        requestContext,
+        request,
+        response,
+        parseAdminDepartmentPayload,
+        securityConfig.jwtAccessTokenSecret,
+        { allowedRoles: ADMIN_ONLY_ROLES },
+        async (payload, principal, context) => {
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+
+          const department = await prismaClient.$transaction(async (tx) => {
+            const conflict = await tx.department.findFirst({
+              where: { hospitalId: scope.hospitalId, nameEn: payload.nameEn },
+            });
+            if (conflict) {
+              throw new RequestValidationError(
+                `A department named "${payload.nameEn}" already exists`
+              );
+            }
+
+            let created;
+            try {
+              created = await tx.department.create({
+                data: { hospitalId: scope.hospitalId, nameAr: payload.nameAr, nameEn: payload.nameEn },
+                select: { id: true, nameAr: true, nameEn: true, isActive: true, createdAt: true, updatedAt: true },
+              });
+            } catch (err) {
+              if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
+                throw new RequestValidationError(
+                  `A department named "${payload.nameEn}" already exists`
+                );
+              }
+              throw err;
+            }
+
+            await tx.auditLog.create({
+              data: {
+                hospitalId: scope.hospitalId,
+                actorUserId: scope.principal.userId,
+                action: "DEPARTMENT_CREATED",
+                entityType: "DEPARTMENT",
+                entityId: created.id,
+                after: { nameAr: created.nameAr, nameEn: created.nameEn },
+              },
+            });
+
+            return created;
+          });
+
+          return {
+            status: 201,
+            body: { requestId: context.requestId, department },
+          };
+        }
+      );
+      return;
+    }
+
+    const adminDepartmentPathMatch = path.match(/^\/admin\/departments\/([^/]+)$/);
+    const adminDeptServicesPathMatch = path.match(/^\/admin\/departments\/([^/]+)\/services$/);
+
+    if (method === "PATCH" && adminDepartmentPathMatch) {
+      const departmentId = adminDepartmentPathMatch[1];
+      await withAuthorizedPayload(
+        requestContext,
+        request,
+        response,
+        parseAdminDepartmentPatchPayload,
+        securityConfig.jwtAccessTokenSecret,
+        { allowedRoles: ADMIN_ONLY_ROLES },
+        async (payload, principal, context) => {
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+
+          const updated = await prismaClient.$transaction(async (tx) => {
+            const existing = await tx.department.findUnique({ where: { id: departmentId } });
+            if (!existing || existing.hospitalId !== scope.hospitalId) {
+              throw new NotFoundError("Department not found");
+            }
+
+            if (payload.nameEn !== undefined && payload.nameEn !== existing.nameEn) {
+              const conflict = await tx.department.findFirst({
+                where: { hospitalId: scope.hospitalId, nameEn: payload.nameEn, id: { not: departmentId } },
+              });
+              if (conflict) {
+                throw new RequestValidationError(
+                  `A department named "${payload.nameEn}" already exists`
+                );
+              }
+            }
+
+            const data: Record<string, unknown> = {};
+            if (payload.nameAr !== undefined) data.nameAr = payload.nameAr;
+            if (payload.nameEn !== undefined) data.nameEn = payload.nameEn;
+            if (payload.isActive !== undefined) data.isActive = payload.isActive;
+
+            const dept = await tx.department.update({
+              where: { id: departmentId },
+              data,
+              select: { id: true, nameAr: true, nameEn: true, isActive: true, createdAt: true, updatedAt: true },
+            });
+
+            await tx.auditLog.create({
+              data: {
+                hospitalId: scope.hospitalId,
+                actorUserId: scope.principal.userId,
+                action: "DEPARTMENT_UPDATED",
+                entityType: "DEPARTMENT",
+                entityId: dept.id,
+                before: { nameAr: existing.nameAr, nameEn: existing.nameEn, isActive: existing.isActive },
+                after: asAuditJson(data),
+              },
+            });
+
+            return dept;
+          });
+
+          return {
+            status: 200,
+            body: { requestId: context.requestId, department: updated },
+          };
+        }
+      );
+      return;
+    }
+
+    if (method === "DELETE" && adminDepartmentPathMatch) {
+      const departmentId = adminDepartmentPathMatch[1];
+      await withAuthorizedNoPayload(
+        requestContext,
+        request,
+        response,
+        securityConfig.jwtAccessTokenSecret,
+        { allowedRoles: ADMIN_ONLY_ROLES },
+        async (principal, context) => {
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+
+          await prismaClient.$transaction(async (tx) => {
+            const existing = await tx.department.findUnique({ where: { id: departmentId } });
+            if (!existing || existing.hospitalId !== scope.hospitalId) {
+              throw new NotFoundError("Department not found");
+            }
+
+            try {
+              await tx.department.delete({ where: { id: departmentId } });
+            } catch (err) {
+              if (err instanceof Prisma.PrismaClientKnownRequestError && (err.code === "P2003" || err.code === "P2014")) {
+                throw new ConflictError(
+                  "This department has existing tickets and cannot be permanently deleted. Use the toggle to deactivate it instead."
+                );
+              }
+              throw err;
+            }
+
+            await tx.auditLog.create({
+              data: {
+                hospitalId: scope.hospitalId,
+                actorUserId: scope.principal.userId,
+                action: "DEPARTMENT_DELETED",
+                entityType: "DEPARTMENT",
+                entityId: departmentId,
+                before: { nameEn: existing.nameEn, nameAr: existing.nameAr, isActive: existing.isActive },
+                after: null,
+              },
+            });
+          });
+
+          return {
+            status: 200,
+            body: { requestId: context.requestId, success: true },
+          };
+        }
+      );
+      return;
+    }
+
+    // ── Phase D: Services ─────────────────────────────────────────────────────
+
+    if (method === "POST" && adminDeptServicesPathMatch) {
+      const departmentId = adminDeptServicesPathMatch[1];
+      await withAuthorizedPayload(
+        requestContext,
+        request,
+        response,
+        parseAdminServicePayload,
+        securityConfig.jwtAccessTokenSecret,
+        { allowedRoles: ADMIN_ONLY_ROLES },
+        async (payload, principal, context) => {
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+
+          const service = await prismaClient.$transaction(async (tx) => {
+            const dept = await tx.department.findUnique({ where: { id: departmentId } });
+            if (!dept || dept.hospitalId !== scope.hospitalId) {
+              throw new NotFoundError("Department not found");
+            }
+
+            const prefixConflict = await tx.service.findFirst({
+              where: { departmentId, ticketPrefix: payload.ticketPrefix },
+            });
+            if (prefixConflict) {
+              throw new RequestValidationError(
+                `A service with ticket prefix "${payload.ticketPrefix}" already exists in this department`
+              );
+            }
+
+            const nameConflict = await tx.service.findFirst({
+              where: { departmentId, nameEn: payload.nameEn },
+            });
+            if (nameConflict) {
+              throw new RequestValidationError(
+                `A service named "${payload.nameEn}" already exists in this department`
+              );
+            }
+
+            const created = await tx.service.create({
+              data: {
+                departmentId,
+                nameAr: payload.nameAr,
+                nameEn: payload.nameEn,
+                ticketPrefix: payload.ticketPrefix,
+                ...(payload.estimatedWaitMinutes !== undefined && { estimatedWaitMinutes: payload.estimatedWaitMinutes }),
+                ...(payload.nearingTurnThreshold !== undefined && { nearingTurnThreshold: payload.nearingTurnThreshold }),
+                ...(payload.dailyResetEnabled !== undefined && { dailyResetEnabled: payload.dailyResetEnabled }),
+              },
+              select: {
+                id: true,
+                nameAr: true,
+                nameEn: true,
+                ticketPrefix: true,
+                estimatedWaitMinutes: true,
+                nearingTurnThreshold: true,
+                dailyResetEnabled: true,
+                isActive: true,
+                createdAt: true,
+                updatedAt: true,
+              },
+            });
+
+            await tx.auditLog.create({
+              data: {
+                hospitalId: scope.hospitalId,
+                actorUserId: scope.principal.userId,
+                action: "SERVICE_CREATED",
+                entityType: "SERVICE",
+                entityId: created.id,
+                after: { nameAr: created.nameAr, nameEn: created.nameEn, ticketPrefix: created.ticketPrefix },
+              },
+            });
+
+            return created;
+          });
+
+          return {
+            status: 201,
+            body: { requestId: context.requestId, service },
+          };
+        }
+      );
+      return;
+    }
+
+    const adminServicePathMatch = path.match(/^\/admin\/services\/([^/]+)$/);
+
+    if (method === "PATCH" && adminServicePathMatch) {
+      const serviceId = adminServicePathMatch[1];
+      await withAuthorizedPayload(
+        requestContext,
+        request,
+        response,
+        parseAdminServicePatchPayload,
+        securityConfig.jwtAccessTokenSecret,
+        { allowedRoles: ADMIN_ONLY_ROLES },
+        async (payload, principal, context) => {
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+
+          const updated = await prismaClient.$transaction(async (tx) => {
+            const existing = await tx.service.findUnique({
+              where: { id: serviceId },
+              include: { department: { select: { hospitalId: true } } },
+            });
+            if (!existing || existing.department.hospitalId !== scope.hospitalId) {
+              throw new NotFoundError("Service not found");
+            }
+
+            if (payload.ticketPrefix !== undefined && payload.ticketPrefix !== existing.ticketPrefix) {
+              const conflict = await tx.service.findFirst({
+                where: { departmentId: existing.departmentId, ticketPrefix: payload.ticketPrefix, id: { not: serviceId } },
+              });
+              if (conflict) {
+                throw new RequestValidationError(
+                  `A service with ticket prefix "${payload.ticketPrefix}" already exists in this department`
+                );
+              }
+            }
+
+            if (payload.nameEn !== undefined && payload.nameEn !== existing.nameEn) {
+              const conflict = await tx.service.findFirst({
+                where: { departmentId: existing.departmentId, nameEn: payload.nameEn, id: { not: serviceId } },
+              });
+              if (conflict) {
+                throw new RequestValidationError(
+                  `A service named "${payload.nameEn}" already exists in this department`
+                );
+              }
+            }
+
+            const data: Record<string, unknown> = {};
+            if (payload.nameAr !== undefined) data.nameAr = payload.nameAr;
+            if (payload.nameEn !== undefined) data.nameEn = payload.nameEn;
+            if (payload.ticketPrefix !== undefined) data.ticketPrefix = payload.ticketPrefix;
+            if (payload.estimatedWaitMinutes !== undefined) data.estimatedWaitMinutes = payload.estimatedWaitMinutes;
+            if (payload.nearingTurnThreshold !== undefined) data.nearingTurnThreshold = payload.nearingTurnThreshold;
+            if (payload.dailyResetEnabled !== undefined) data.dailyResetEnabled = payload.dailyResetEnabled;
+            if (payload.isActive !== undefined) data.isActive = payload.isActive;
+
+            const svc = await tx.service.update({
+              where: { id: serviceId },
+              data,
+              select: {
+                id: true,
+                nameAr: true,
+                nameEn: true,
+                ticketPrefix: true,
+                estimatedWaitMinutes: true,
+                nearingTurnThreshold: true,
+                dailyResetEnabled: true,
+                isActive: true,
+                createdAt: true,
+                updatedAt: true,
+              },
+            });
+
+            await tx.auditLog.create({
+              data: {
+                hospitalId: scope.hospitalId,
+                actorUserId: scope.principal.userId,
+                action: "SERVICE_UPDATED",
+                entityType: "SERVICE",
+                entityId: svc.id,
+                before: {
+                  nameAr: existing.nameAr,
+                  nameEn: existing.nameEn,
+                  ticketPrefix: existing.ticketPrefix,
+                  isActive: existing.isActive,
+                },
+                after: asAuditJson(data),
+              },
+            });
+
+            return svc;
+          });
+
+          return {
+            status: 200,
+            body: { requestId: context.requestId, service: updated },
+          };
+        }
+      );
+      return;
+    }
+
+    if (method === "DELETE" && adminServicePathMatch) {
+      const serviceId = adminServicePathMatch[1];
+      await withAuthorizedNoPayload(
+        requestContext,
+        request,
+        response,
+        securityConfig.jwtAccessTokenSecret,
+        { allowedRoles: ADMIN_ONLY_ROLES },
+        async (principal, context) => {
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+
+          await prismaClient.$transaction(async (tx) => {
+            const existing = await tx.service.findUnique({
+              where: { id: serviceId },
+              include: { department: { select: { hospitalId: true } } },
+            });
+            if (!existing || existing.department.hospitalId !== scope.hospitalId) {
+              throw new NotFoundError("Service not found");
+            }
+
+            try {
+              await tx.service.delete({ where: { id: serviceId } });
+            } catch (err) {
+              if (err instanceof Prisma.PrismaClientKnownRequestError && (err.code === "P2003" || err.code === "P2014")) {
+                throw new ConflictError(
+                  "This service has existing tickets and cannot be permanently deleted. Use the toggle to deactivate it instead."
+                );
+              }
+              throw err;
+            }
+
+            await tx.auditLog.create({
+              data: {
+                hospitalId: scope.hospitalId,
+                actorUserId: scope.principal.userId,
+                action: "SERVICE_DELETED",
+                entityType: "SERVICE",
+                entityId: serviceId,
+                before: { nameEn: existing.nameEn, nameAr: existing.nameAr, isActive: existing.isActive },
+                after: null,
+              },
+            });
+          });
+
+          return {
+            status: 200,
+            body: { requestId: context.requestId, success: true },
+          };
+        }
+      );
+      return;
+    }
+
+    // ── Phase D: Counter stations ─────────────────────────────────────────────
+
+    if (method === "GET" && path === "/admin/stations") {
+      await withAuthorizedNoPayload(
+        requestContext,
+        request,
+        response,
+        securityConfig.jwtAccessTokenSecret,
+        { allowedRoles: ADMIN_CONFIG_SETTINGS_ALLOWED_ROLES },
+        async (principal, context) => {
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+          const stations = await prismaClient.counterStation.findMany({
+            where: { hospitalId: scope.hospitalId },
+            orderBy: { counterCode: "asc" },
+            select: {
+              id: true,
+              counterCode: true,
+              serviceId: true,
+              isActive: true,
+              createdAt: true,
+              updatedAt: true,
+              service: {
+                select: { id: true, nameEn: true, nameAr: true, departmentId: true },
+              },
+            },
+          });
+
+          return {
+            status: 200,
+            body: { requestId: context.requestId, stations },
+          };
+        }
+      );
+      return;
+    }
+
+    if (method === "POST" && path === "/admin/stations") {
+      await withAuthorizedPayload(
+        requestContext,
+        request,
+        response,
+        (payload) => ({
+          counterCode: requireString(payload, "counterCode"),
+          serviceId: requireString(payload, "serviceId"),
+        }),
+        securityConfig.jwtAccessTokenSecret,
+        { allowedRoles: ADMIN_CONFIG_SETTINGS_ALLOWED_ROLES },
+        async (payload, principal, context) => {
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+
+          const station = await prismaClient.$transaction(async (tx) => {
+            const conflict = await tx.counterStation.findFirst({
+              where: { hospitalId: scope.hospitalId, counterCode: payload.counterCode },
+            });
+            if (conflict) {
+              throw new RequestValidationError(
+                `A counter station with code "${payload.counterCode}" already exists`
+              );
+            }
+
+            const service = await tx.service.findUnique({
+              where: { id: payload.serviceId },
+              include: { department: { select: { hospitalId: true } } },
+            });
+            if (!service || service.department.hospitalId !== scope.hospitalId) {
+              throw new RequestValidationError("serviceId does not refer to a valid service");
+            }
+
+            const created = await tx.counterStation.create({
+              data: {
+                hospitalId: scope.hospitalId,
+                counterCode: payload.counterCode,
+                serviceId: payload.serviceId,
+              },
+              select: {
+                id: true,
+                counterCode: true,
+                serviceId: true,
+                isActive: true,
+                createdAt: true,
+                updatedAt: true,
+              },
+            });
+
+            await tx.auditLog.create({
+              data: {
+                hospitalId: scope.hospitalId,
+                actorUserId: scope.principal.userId,
+                action: "STATION_CREATED",
+                entityType: "COUNTER_STATION",
+                entityId: created.id,
+                after: { counterCode: created.counterCode, serviceId: created.serviceId },
+              },
+            });
+
+            return created;
+          });
+
+          return {
+            status: 201,
+            body: { requestId: context.requestId, station },
+          };
+        }
+      );
+      return;
+    }
+
+    const adminStationPathMatch = path.match(/^\/admin\/stations\/([^/]+)$/);
+
+    if (method === "PATCH" && adminStationPathMatch) {
+      const stationId = adminStationPathMatch[1];
+      await withAuthorizedPayload(
+        requestContext,
+        request,
+        response,
+        (payload) => {
+          const result: { serviceId?: string; isActive?: boolean } = {
+            serviceId: optionalString(payload, "serviceId"),
+            isActive: optionalBoolean(payload, "isActive"),
+          };
+          if (result.serviceId === undefined && result.isActive === undefined) {
+            throw new RequestValidationError("At least one field (serviceId, isActive) must be provided");
+          }
+          return result;
+        },
+        securityConfig.jwtAccessTokenSecret,
+        { allowedRoles: ADMIN_CONFIG_SETTINGS_ALLOWED_ROLES },
+        async (payload, principal, context) => {
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+
+          const updated = await prismaClient.$transaction(async (tx) => {
+            const existing = await tx.counterStation.findUnique({ where: { id: stationId } });
+            if (!existing || existing.hospitalId !== scope.hospitalId) {
+              throw new NotFoundError("Counter station not found");
+            }
+
+            if (payload.serviceId !== undefined) {
+              const service = await tx.service.findUnique({
+                where: { id: payload.serviceId },
+                include: { department: { select: { hospitalId: true } } },
+              });
+              if (!service || service.department.hospitalId !== scope.hospitalId) {
+                throw new RequestValidationError("serviceId does not refer to a valid service");
+              }
+            }
+
+            const data: Record<string, unknown> = {};
+            if (payload.serviceId !== undefined) data.serviceId = payload.serviceId;
+            if (payload.isActive !== undefined) data.isActive = payload.isActive;
+
+            const station = await tx.counterStation.update({
+              where: { id: stationId },
+              data,
+              select: { id: true, counterCode: true, serviceId: true, isActive: true, createdAt: true, updatedAt: true },
+            });
+
+            await tx.auditLog.create({
+              data: {
+                hospitalId: scope.hospitalId,
+                actorUserId: scope.principal.userId,
+                action: "STATION_UPDATED",
+                entityType: "COUNTER_STATION",
+                entityId: stationId,
+                before: { serviceId: existing.serviceId, isActive: existing.isActive },
+                after: asAuditJson(data),
+              },
+            });
+
+            return station;
+          });
+
+          return {
+            status: 200,
+            body: { requestId: context.requestId, station: updated },
+          };
+        }
+      );
+      return;
+    }
+
+    if (method === "DELETE" && adminStationPathMatch) {
+      const stationId = adminStationPathMatch[1];
+      await withAuthorizedNoPayload(
+        requestContext,
+        request,
+        response,
+        securityConfig.jwtAccessTokenSecret,
+        { allowedRoles: ADMIN_CONFIG_SETTINGS_ALLOWED_ROLES },
+        async (principal, context) => {
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+
+          await prismaClient.$transaction(async (tx) => {
+            const existing = await tx.counterStation.findUnique({ where: { id: stationId } });
+            if (!existing || existing.hospitalId !== scope.hospitalId) {
+              throw new NotFoundError("Counter station not found");
+            }
+
+            await tx.counterStation.delete({ where: { id: stationId } });
+
+            await tx.auditLog.create({
+              data: {
+                hospitalId: scope.hospitalId,
+                actorUserId: scope.principal.userId,
+                action: "STATION_DELETED",
+                entityType: "COUNTER_STATION",
+                entityId: stationId,
+                before: { counterCode: existing.counterCode, isActive: existing.isActive },
+                after: null,
+              },
+            });
+          });
+
+          return {
+            status: 200,
+            body: { requestId: context.requestId, success: true },
+          };
+        }
+      );
+      return;
+    }
+
+    // ── Phase D: User management ───────────────────────────────────────────────
+
+    if (method === "GET" && path === "/admin/users") {
+      await withAuthorizedNoPayload(
+        requestContext,
+        request,
+        response,
+        securityConfig.jwtAccessTokenSecret,
+        { allowedRoles: ADMIN_ONLY_ROLES },
+        async (principal, context) => {
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+          const users = await prismaClient.user.findMany({
+            where: { hospitalId: scope.hospitalId },
+            orderBy: { createdAt: "asc" },
+            select: {
+              id: true,
+              email: true,
+              name: true,
+              isActive: true,
+              mustChangePassword: true,
+              createdAt: true,
+              updatedAt: true,
+              roleAssignments: { select: { id: true, role: true, departmentId: true } },
+            },
+          });
+
+          return {
+            status: 200,
+            body: { requestId: context.requestId, users },
+          };
+        }
+      );
+      return;
+    }
+
+    if (method === "POST" && path === "/admin/users") {
+      await withAuthorizedPayload(
+        requestContext,
+        request,
+        response,
+        parseAdminUserPayload,
+        securityConfig.jwtAccessTokenSecret,
+        { allowedRoles: ADMIN_ONLY_ROLES },
+        async (payload, principal, context) => {
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+
+          if (DEPT_SCOPED_ROLES.has(payload.role) && !payload.departmentId) {
+            throw new RequestValidationError(
+              "departmentId is required for MANAGER and STAFF roles"
+            );
+          }
+          if (!DEPT_SCOPED_ROLES.has(payload.role) && payload.departmentId) {
+            throw new RequestValidationError(
+              "departmentId must not be provided for ADMIN and IT roles"
+            );
+          }
+
+          const passwordHash = await createArgon2idPasswordHash(payload.password);
+
+          const user = await prismaClient.$transaction(async (tx) => {
+            const conflict = await tx.user.findFirst({
+              where: { hospitalId: scope.hospitalId, email: payload.email.trim().toLowerCase() },
+            });
+            if (conflict) {
+              throw new RequestValidationError(
+                `A user with email "${payload.email}" already exists`
+              );
+            }
+
+            if (payload.departmentId) {
+              const dept = await tx.department.findUnique({ where: { id: payload.departmentId } });
+              if (!dept || dept.hospitalId !== scope.hospitalId) {
+                throw new RequestValidationError("departmentId does not refer to a valid department");
+              }
+            }
+
+            const created = await tx.user.create({
+              data: {
+                hospitalId: scope.hospitalId,
+                email: payload.email.trim().toLowerCase(),
+                name: payload.name,
+                passwordHash,
+                mustChangePassword: true,
+                roleAssignments: {
+                  create: { role: payload.role, departmentId: payload.departmentId ?? null },
+                },
+              },
+              select: {
+                id: true,
+                email: true,
+                name: true,
+                isActive: true,
+                mustChangePassword: true,
+                createdAt: true,
+                updatedAt: true,
+                roleAssignments: { select: { id: true, role: true, departmentId: true } },
+              },
+            });
+
+            await tx.auditLog.create({
+              data: {
+                hospitalId: scope.hospitalId,
+                actorUserId: scope.principal.userId,
+                action: "USER_CREATED",
+                entityType: "USER",
+                entityId: created.id,
+                after: {
+                  email: created.email,
+                  role: payload.role,
+                  departmentId: payload.departmentId ?? null,
+                },
+              },
+            });
+
+            return created;
+          });
+
+          return {
+            status: 201,
+            body: { requestId: context.requestId, user },
+          };
+        }
+      );
+      return;
+    }
+
+    const adminUserPathMatch = path.match(/^\/admin\/users\/([^/]+)$/);
+    const adminUserResetPasswordPathMatch = path.match(/^\/admin\/users\/([^/]+)\/reset-password$/);
+
+    if (method === "PATCH" && adminUserPathMatch) {
+      const targetUserId = adminUserPathMatch[1];
+      await withAuthorizedPayload(
+        requestContext,
+        request,
+        response,
+        parseAdminUserPatchPayload,
+        securityConfig.jwtAccessTokenSecret,
+        { allowedRoles: ADMIN_ONLY_ROLES },
+        async (payload, principal, context) => {
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+
+          const updated = await prismaClient.$transaction(async (tx) => {
+            const existing = await tx.user.findUnique({
+              where: { id: targetUserId },
+              include: { roleAssignments: { select: { id: true, role: true, departmentId: true } } },
+            });
+            if (!existing || existing.hospitalId !== scope.hospitalId) {
+              throw new NotFoundError("User not found");
+            }
+
+            const userDataUpdate: Record<string, unknown> = {};
+            if (payload.name !== undefined) userDataUpdate.name = payload.name;
+            if (payload.isActive !== undefined) userDataUpdate.isActive = payload.isActive;
+            if (payload.email !== undefined) {
+              const emailLower = payload.email.trim().toLowerCase();
+              const conflict = await tx.user.findFirst({
+                where: { hospitalId: scope.hospitalId, email: emailLower, id: { not: targetUserId } },
+              });
+              if (conflict) {
+                throw new RequestValidationError(`A user with email "${payload.email}" already exists`);
+              }
+              userDataUpdate.email = emailLower;
+            }
+
+            if (payload.role !== undefined) {
+              const needsDept = DEPT_SCOPED_ROLES.has(payload.role);
+              const newDeptId = payload.departmentId !== undefined ? payload.departmentId : null;
+
+              if (needsDept && !newDeptId) {
+                throw new RequestValidationError(
+                  "departmentId is required when assigning MANAGER or STAFF role"
+                );
+              }
+              if (!needsDept && newDeptId) {
+                throw new RequestValidationError(
+                  "departmentId must not be provided for ADMIN or IT roles"
+                );
+              }
+
+              if (newDeptId) {
+                const dept = await tx.department.findUnique({ where: { id: newDeptId } });
+                if (!dept || dept.hospitalId !== scope.hospitalId) {
+                  throw new RequestValidationError("departmentId does not refer to a valid department");
+                }
+              }
+
+              await tx.roleAssignment.deleteMany({ where: { userId: targetUserId } });
+              await tx.roleAssignment.create({
+                data: { userId: targetUserId, role: payload.role, departmentId: newDeptId },
+              });
+            } else if (payload.departmentId !== undefined) {
+              const currentAssignment = existing.roleAssignments[0];
+              if (!currentAssignment || !DEPT_SCOPED_ROLES.has(currentAssignment.role)) {
+                throw new RequestValidationError(
+                  "departmentId can only be updated for users with MANAGER or STAFF role"
+                );
+              }
+              if (payload.departmentId !== null) {
+                const dept = await tx.department.findUnique({ where: { id: payload.departmentId } });
+                if (!dept || dept.hospitalId !== scope.hospitalId) {
+                  throw new RequestValidationError("departmentId does not refer to a valid department");
+                }
+              }
+              await tx.roleAssignment.updateMany({
+                where: { userId: targetUserId },
+                data: { departmentId: payload.departmentId },
+              });
+            }
+
+            const user = await tx.user.update({
+              where: { id: targetUserId },
+              data: userDataUpdate,
+              select: {
+                id: true,
+                email: true,
+                name: true,
+                isActive: true,
+                mustChangePassword: true,
+                createdAt: true,
+                updatedAt: true,
+                roleAssignments: { select: { id: true, role: true, departmentId: true } },
+              },
+            });
+
+            await tx.auditLog.create({
+              data: {
+                hospitalId: scope.hospitalId,
+                actorUserId: scope.principal.userId,
+                action: "USER_UPDATED",
+                entityType: "USER",
+                entityId: targetUserId,
+                before: {
+                  email: existing.email,
+                  name: existing.name,
+                  isActive: existing.isActive,
+                  roleAssignments: existing.roleAssignments,
+                },
+                after: {
+                  ...userDataUpdate,
+                  ...(payload.role !== undefined && {
+                    role: payload.role,
+                    departmentId: payload.departmentId ?? null,
+                  }),
+                  ...(payload.role === undefined && payload.departmentId !== undefined && {
+                    departmentId: payload.departmentId,
+                  }),
+                },
+              },
+            });
+
+            return user;
+          });
+
+          return {
+            status: 200,
+            body: { requestId: context.requestId, user: updated },
+          };
+        }
+      );
+      return;
+    }
+
+    if (method === "POST" && adminUserResetPasswordPathMatch) {
+      const targetUserId = adminUserResetPasswordPathMatch[1];
+      await withAuthorizedPayload(
+        requestContext,
+        request,
+        response,
+        parseAdminResetPasswordPayload,
+        securityConfig.jwtAccessTokenSecret,
+        { allowedRoles: ADMIN_ONLY_ROLES },
+        async (payload, principal, context) => {
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+
+          const newHash = await createArgon2idPasswordHash(payload.newPassword);
+
+          await prismaClient.$transaction(async (tx) => {
+            const existing = await tx.user.findUnique({ where: { id: targetUserId } });
+            if (!existing || existing.hospitalId !== scope.hospitalId) {
+              throw new NotFoundError("User not found");
+            }
+
+            await tx.user.update({
+              where: { id: targetUserId },
+              data: {
+                passwordHash: newHash,
+                mustChangePassword: true,
+                failedLoginAttempts: 0,
+                lockedUntil: null,
+              },
+            });
+
+            await tx.auditLog.create({
+              data: {
+                hospitalId: scope.hospitalId,
+                actorUserId: scope.principal.userId,
+                action: "USER_PASSWORD_RESET",
+                entityType: "USER",
+                entityId: targetUserId,
+                after: { mustChangePassword: true },
+              },
+            });
+          });
+
+          return {
+            status: 200,
+            body: { requestId: context.requestId, success: true },
+          };
+        }
+      );
+      return;
+    }
+
+    // ── Phase D: Device management ────────────────────────────────────────────
+
+    if (method === "GET" && path === "/admin/devices") {
+      await withAuthorizedNoPayload(
+        requestContext,
+        request,
+        response,
+        securityConfig.jwtAccessTokenSecret,
+        { allowedRoles: ADMIN_CONFIG_SETTINGS_ALLOWED_ROLES },
+        async (principal, context) => {
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+          const devices = await prismaClient.device.findMany({
+            where: { hospitalId: scope.hospitalId },
+            orderBy: { createdAt: "asc" },
+            select: {
+              id: true,
+              deviceId: true,
+              deviceType: true,
+              displayName: true,
+              assignedDepartmentId: true,
+              assignedCounterStationId: true,
+              config: true,
+              isActive: true,
+              createdAt: true,
+              updatedAt: true,
+              department: { select: { id: true, nameEn: true, nameAr: true } },
+              counterStation: { select: { id: true, counterCode: true, serviceId: true } },
+            },
+          });
+
+          return {
+            status: 200,
+            body: { requestId: context.requestId, devices },
+          };
+        }
+      );
+      return;
+    }
+
+    if (method === "POST" && path === "/admin/devices") {
+      await withAuthorizedPayload(
+        requestContext,
+        request,
+        response,
+        parseAdminDevicePayload,
+        securityConfig.jwtAccessTokenSecret,
+        { allowedRoles: ADMIN_CONFIG_SETTINGS_ALLOWED_ROLES },
+        async (payload, principal, context) => {
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+
+          const device = await prismaClient.$transaction(async (tx) => {
+            const conflict = await tx.device.findUnique({ where: { deviceId: payload.deviceId } });
+            if (conflict) {
+              throw new RequestValidationError(
+                `A device with ID "${payload.deviceId}" is already registered`
+              );
+            }
+
+            if (payload.assignedDepartmentId) {
+              const dept = await tx.department.findUnique({ where: { id: payload.assignedDepartmentId } });
+              if (!dept || dept.hospitalId !== scope.hospitalId) {
+                throw new RequestValidationError("assignedDepartmentId does not refer to a valid department");
+              }
+            }
+
+            if (payload.assignedCounterStationId) {
+              const station = await tx.counterStation.findUnique({ where: { id: payload.assignedCounterStationId } });
+              if (!station || station.hospitalId !== scope.hospitalId) {
+                throw new RequestValidationError("assignedCounterStationId does not refer to a valid counter station");
+              }
+            }
+
+            const created = await tx.device.create({
+              data: {
+                hospitalId: scope.hospitalId,
+                deviceId: payload.deviceId,
+                deviceType: payload.deviceType as import("@prisma/client").DeviceType,
+                displayName: payload.displayName,
+                assignedDepartmentId: payload.assignedDepartmentId,
+                assignedCounterStationId: payload.assignedCounterStationId,
+              },
+              select: {
+                id: true,
+                deviceId: true,
+                deviceType: true,
+                displayName: true,
+                assignedDepartmentId: true,
+                assignedCounterStationId: true,
+                config: true,
+                isActive: true,
+                createdAt: true,
+                updatedAt: true,
+              },
+            });
+
+            await tx.auditLog.create({
+              data: {
+                hospitalId: scope.hospitalId,
+                actorUserId: scope.principal.userId,
+                action: "DEVICE_REGISTERED",
+                entityType: "DEVICE",
+                entityId: created.id,
+                after: { deviceId: created.deviceId, deviceType: created.deviceType },
+              },
+            });
+
+            return created;
+          });
+
+          return {
+            status: 201,
+            body: { requestId: context.requestId, device },
+          };
+        }
+      );
+      return;
+    }
+
+    const adminDevicePathMatch = path.match(/^\/admin\/devices\/([^/]+)$/);
+
+    if (method === "PATCH" && adminDevicePathMatch) {
+      const deviceDbId = adminDevicePathMatch[1];
+      await withAuthorizedPayload(
+        requestContext,
+        request,
+        response,
+        parseAdminDevicePatchPayload,
+        securityConfig.jwtAccessTokenSecret,
+        { allowedRoles: ADMIN_CONFIG_SETTINGS_ALLOWED_ROLES },
+        async (payload, principal, context) => {
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+
+          const updated = await prismaClient.$transaction(async (tx) => {
+            const existing = await tx.device.findUnique({ where: { id: deviceDbId } });
+            if (!existing || existing.hospitalId !== scope.hospitalId) {
+              throw new NotFoundError("Device not found");
+            }
+
+            if (payload.assignedDepartmentId) {
+              const dept = await tx.department.findUnique({ where: { id: payload.assignedDepartmentId } });
+              if (!dept || dept.hospitalId !== scope.hospitalId) {
+                throw new RequestValidationError("assignedDepartmentId does not refer to a valid department");
+              }
+            }
+
+            if (payload.assignedCounterStationId) {
+              const station = await tx.counterStation.findUnique({ where: { id: payload.assignedCounterStationId } });
+              if (!station || station.hospitalId !== scope.hospitalId) {
+                throw new RequestValidationError("assignedCounterStationId does not refer to a valid counter station");
+              }
+            }
+
+            const data: Record<string, unknown> = {};
+            if (payload.displayName !== undefined) data.displayName = payload.displayName;
+            if (payload.assignedDepartmentId !== undefined) data.assignedDepartmentId = payload.assignedDepartmentId;
+            if (payload.assignedCounterStationId !== undefined) data.assignedCounterStationId = payload.assignedCounterStationId;
+            if (payload.isActive !== undefined) data.isActive = payload.isActive;
+
+            const dev = await tx.device.update({
+              where: { id: deviceDbId },
+              data,
+              select: {
+                id: true,
+                deviceId: true,
+                deviceType: true,
+                displayName: true,
+                assignedDepartmentId: true,
+                assignedCounterStationId: true,
+                config: true,
+                isActive: true,
+                createdAt: true,
+                updatedAt: true,
+              },
+            });
+
+            await tx.auditLog.create({
+              data: {
+                hospitalId: scope.hospitalId,
+                actorUserId: scope.principal.userId,
+                action: "DEVICE_UPDATED",
+                entityType: "DEVICE",
+                entityId: deviceDbId,
+                before: {
+                  displayName: existing.displayName,
+                  assignedDepartmentId: existing.assignedDepartmentId,
+                  assignedCounterStationId: existing.assignedCounterStationId,
+                  isActive: existing.isActive,
+                },
+                after: asAuditJson(data),
+              },
+            });
+
+            return dev;
+          });
+
+          return {
+            status: 200,
+            body: { requestId: context.requestId, device: updated },
+          };
+        }
+      );
+      return;
+    }
+
+    if (method === "DELETE" && adminDevicePathMatch) {
+      const deviceDbId = adminDevicePathMatch[1];
+      await withAuthorizedNoPayload(
+        requestContext,
+        request,
+        response,
+        securityConfig.jwtAccessTokenSecret,
+        { allowedRoles: ADMIN_CONFIG_SETTINGS_ALLOWED_ROLES },
+        async (principal, context) => {
+          const scope = await resolvePrincipalAccessScope(prismaClient, principal);
+
+          await prismaClient.$transaction(async (tx) => {
+            const existing = await tx.device.findUnique({ where: { id: deviceDbId } });
+            if (!existing || existing.hospitalId !== scope.hospitalId) {
+              throw new NotFoundError("Device not found");
+            }
+
+            await tx.device.delete({ where: { id: deviceDbId } });
+
+            await tx.auditLog.create({
+              data: {
+                hospitalId: scope.hospitalId,
+                actorUserId: scope.principal.userId,
+                action: "DEVICE_DELETED",
+                entityType: "DEVICE",
+                entityId: deviceDbId,
+                before: { deviceId: existing.deviceId, isActive: existing.isActive },
+                after: null,
+              },
+            });
+          });
+
+          return {
+            status: 200,
+            body: { requestId: context.requestId, success: true },
           };
         }
       );
